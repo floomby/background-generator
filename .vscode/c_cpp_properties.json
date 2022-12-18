@@ -1,0 +1,26 @@
+{
+    "configurations": [
+        {
+            "name": "CYGWIN",
+            "includePath": [
+                "C:/msys64/mingw64/include/boost",
+                "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.0/include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE"
+            ],
+            "compilerPath": "C:/msys64/mingw64/bin/g++",
+            "cppStandard": "gnu++23",
+            "browse": {
+                "path": [
+                    "C:/msys64/mingw64/include/boost/"
+                ],
+                "limitSymbolsToIncludedHeaders": true,
+                "databaseFilename": ""
+            },
+            "configurationProvider": "ms-vscode.makefile-tools"
+        }
+    ],
+    "version": 4
+}
