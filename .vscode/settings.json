@@ -80,6 +80,12 @@
     "span": "cpp",
     "__nullptr": "cpp",
     "unordered_set": "cpp",
-    "__tuple": "cpp"
+    "__tuple": "cpp",
+    "__hash_table": "cpp",
+    "__split_buffer": "cpp",
+    "__tree": "cpp",
+    "filesystem": "cpp",
+    "ios": "cpp",
+    "locale": "cpp"
   }
 }

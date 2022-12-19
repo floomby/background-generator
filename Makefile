@@ -7,7 +7,7 @@ LD_FLAGS := -lOpenCL $(CL_LIB)
 target: main.o spng.dll
 	g++ $(CPP_FLAGS) -o target main.o $(LD_FLAGS) spng.dll
 
-main.o: main.cpp
+main.o: main.cpp airyKernel.h
 	g++ $(CPP_FLAGS) -c main.cpp
 
 spng.dll: libs/spng.c

@@ -68,7 +68,9 @@ __kernel void nebula(__global float4 *out) {
   float4 second = applyWavelengths(longs2, x, y, nebulaColors, 0.4f, (float4)(1.0f, 1.0f, 1.3f, 0.0f));
   float4 ret = clamp(second - first, (float4)(0.0f, 0.0f, 0.0f, 0.0f), (float4)(1.0f, 1.0f, 1.0f, 0.0f));
 
-  out[flatCoord] = ret;
+  float alpha = length(ret.xyz) * 0.5f;
+
+  out[flatCoord] = (float4)(ret.xyz, alpha);
 }
 
 const float4 doStars(__constant const float wavelengths[5], int x, int y, __constant const float biases[5], __constant const float scales[5]) {
@@ -81,10 +83,11 @@ const float4 doStars(__constant const float wavelengths[5], int x, int y, __cons
   }
   value /= 5.0f;
   value = smoothstep(0.5f, 0.63f, value);
-  return (float4)(value, value, value, 1.0f);
+  return (float4)(value, value, value, value);
 }
 
-const __constant float starWavelengths[5] = {2.0f, 3.0f, 5.0f, 15.0f, 100.0f};
+const __constant float starBackgroundWavelengths[5] = {2.0f, 3.0f, 5.0f, 15.0f, 100.0f};
+const __constant float starForegroundWavelengths[5] = {3.0f, 4.0f, 5.0f, 20.0f, 200.0f};
 const __constant float starBiases[5] = {0.0f, -0.1f, 0.0f, -0.4f, -0.4f};
 const __constant float starScales[5] = {1.0f, 2.0f, 1.0f, 0.5f, 0.5f};
 
@@ -97,6 +100,37 @@ __kernel void starBackground(__global float4 *out) {
 
   int flatCoord = (oY * get_global_size(0) + oX);
 
-  out[flatCoord] = doStars(starWavelengths, x, y, starBiases, starScales);
+  out[flatCoord] = doStars(starBackgroundWavelengths, x, y, starBiases, starScales);
 }
 
+__kernel void mixLayers(__global float4 *layer0, __global float4 *layer1, __global float4 *out) {
+  int x = get_global_id(0);
+  int y = get_global_id(1);
+
+  int flatCoord = (y * get_global_size(0) + x);
+
+  float3 color = mix(layer0[flatCoord].xyz, layer1[flatCoord].xyz, layer1[flatCoord].w);
+
+  out[flatCoord] = (float4)(color, 1.0f);
+}
+
+__kernel void clear(__global float4 *out) {
+  int x = get_global_id(0);
+  int y = get_global_id(1);
+
+  int flatCoord = (y * get_global_size(0) + x);
+
+  out[flatCoord] = (float4)(0.0f, 0.0f, 0.0f, 1.0f);
+}
+
+__kernel void starForeground(__global float4 *out) {
+  int x = get_global_id(0);
+  int y = get_global_id(1);
+
+  int oX = x - get_global_offset(0);
+  int oY = y - get_global_offset(1);
+
+  int flatCoord = (oY * get_global_size(0) + oX);
+
+  out[flatCoord] = doStars(starForegroundWavelengths, x, y, starBiases, starScales);
+}

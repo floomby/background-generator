@@ -72,26 +72,6 @@ float4 valueAt(
     return center[flatCoord];
 }
 
-float4 fixExtremeSaturation(const float4 input) {
-  float4 output = input;
-
-  float average = (input.x + input.y + input.z) / 3.0f;
-
-  if (input.x > average) {
-    output.x = average;
-  }
-
-  if (input.y > average) {
-    output.y = average;
-  }
-
-  if (input.z > average) {
-    output.z = average;
-  }
-
-  return output;
-}
-
 // These are just the chunks (it is going to be silly to shuffle things around on the cpu, so we just load in a whole chunk)
 // Kernel size might be poorly named, it is really (size - 1) / 2 i.e. 5x5 kernel is 2
 __kernel void convolve(
@@ -107,7 +87,9 @@ __kernel void convolve(
   __global float4 *output,
   __constant float4 *kern,
   const int kernelSize,
-  const float4 kernelSum) {
+  const float4 kernelSum,
+  const float correctionFactor,
+  const float clampLevel) {
   int x = get_global_id(0);
   int y = get_global_id(1);
 
@@ -128,26 +110,17 @@ __kernel void convolve(
     }
   }
 
-  const factor = (kernelSize * 2 + 1) * (kernelSize * 2 + 1);
-
-
   sum.x /= kernelSum.x;
   sum.y /= kernelSum.y;
   sum.z /= kernelSum.z;
 
-  sum.x = pow(sum.x, 1.0f / 2.2f);
-  sum.y = pow(sum.y, 1.0f / 2.2f);
-  sum.z = pow(sum.z, 1.0f / 2.2f);
-  sum.w /= kernelSum.w;
-  sum = clamp(sum, 0.0f, 1.0f);
+  sum.x = clamp(sum.x, 0.0f, clampLevel);
+  sum.y = clamp(sum.y, 0.0f, clampLevel);
+  sum.z = clamp(sum.z, 0.0f, clampLevel);
 
-  sum = fixExtremeSaturation(sum);
+  sum.w = 0.0f;
 
-  // sum.x *= sumAtCenter.x;
-  // sum.y *= sumAtCenter.y;
-  // sum.z *= sumAtCenter.z;
-
-  sum.w = 1.0f;
+  sum = pow(sum, correctionFactor);
 
   output[oY + oX * height] = sum + out;
-  }
+}
