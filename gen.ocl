@@ -5,13 +5,13 @@ float2 hash(int x, int y, int seed) {
   return (float2)(cos(angle), sin(angle));
 }
 
-float lerp(float a, float b, float t) {
+float2 lerp(float2 a, float2 b, float t) {
   return a + t * (b - a);
 }
 
 const int2 offsets[4] = {(int2)(0, 0), (int2)(1, 0), (int2)(0, 1), (int2)(1, 1)};
 
-float noise(float2 coords) {
+float2 noise(float2 coords) {
   int2 i = (int2)(floor(coords.x), floor(coords.y));
 
   float2 gradients[4];
@@ -32,20 +32,39 @@ float noise(float2 coords) {
   float x = smoothstep(0.0f, 1.0f, coords.x - i.x);
   float y = smoothstep(0.0f, 1.0f, coords.y - i.y);
 
-  float a = lerp(dotProducts[0][0], dotProducts[1][0], x);
-  float b = lerp(dotProducts[2][0], dotProducts[3][0], x);
+  float2 a = lerp(dotProducts[0], dotProducts[1], x);
+  float2 b = lerp(dotProducts[2], dotProducts[3], x);
 
-  float out = lerp(a, b, y);
+  float2 out = lerp(a, b, y);
   return out * 0.5f + 0.5f;
+}
+
+const __constant float longs1[4] = {439.0f, 1710.0f, 5474.0f, 2403.0f};
+const __constant float longs2[4] = {30.0f, 6.0f, 60.0f, 3.0f};
+
+const __constant float4 allWhite[4] = {(float4)(0.8f, 0.8f, 1.0f, 1.0), (float4)(0.9f, 0.8f, 1.0f, 1.0), (float4)(1.0f, 0.9f, 0.8f, 1.0), (float4)(1.0f, 1.0f, 1.0f, 1.0)};
+const __constant float4 nebulaColors[4] = {(float4)(0.8f, 0.8f, 1.0f, 1.0), (float4)(0.2f, 0.2f, 1.0f, 1.0), (float4)(2.0f, 2.0f, 1.0f, 1.0), (float4)(0.4f, 0.4f, 1.0f, 1.0)};
+
+const float4 applyWavelengths(__constant const float wavelengths[4], int x, int y, __constant const float4 colors[4], const float scale, float4 bias) {
+  for (int i = 0; i < 4; i++) {
+    float2 p = (float2)(x, y) / wavelengths[i];
+    float2 calc = noise(p);
+    bias += colors[i] * calc.x * scale;
+  }
+  return bias;
 }
 
 __kernel void perlin(__global float *out) {
   int x = get_global_id(0);
   int y = get_global_id(1);
 
-  float wavelength = 32.0f;
+  int flatCoord = (y * get_global_size(0) + x) * 3;
 
-  float2 p = (float2)(x, y) / wavelength;
+  float4 first = applyWavelengths(longs1, x, y, allWhite, 1.0f, (float4)(0.0f, 0.0f, 0.0f, 0.0f));
+  float4 second = applyWavelengths(longs2, x, y, nebulaColors, 0.4f, (float4)(1.0f, 1.0f, 1.3f, 0.0f));
+  float4 ret = clamp(second - first, (float4)(0.0f, 0.0f, 0.0f, 0.0f), (float4)(1.0f, 1.0f, 1.0f, 0.0f));
 
-  out[y * get_global_size(0) + x] = noise(p);
+  out[flatCoord] = ret.x;
+  out[flatCoord + 1] = ret.y;
+  out[flatCoord + 2] = ret.z;
 }

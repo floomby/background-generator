@@ -213,9 +213,9 @@ Image imageFromFloats(float *data, size_t width, size_t height) {
 
   image.pixels.resize(width * height);
   for (size_t i = 0; i < image.pixels.size(); i++) {
-    image.pixels[i] = {.r = std::byte(data[i] * 255.0f),
-                       .g = std::byte(data[i] * 255.0f),
-                       .b = std::byte(data[i] * 255.0f),
+    image.pixels[i] = {.r = std::byte(data[i * 3] * 255.0f),
+                       .g = std::byte(data[i * 3 + 1] * 255.0f),
+                       .b = std::byte(data[i * 3 + 2] * 255.0f),
                        .a = std::byte(255)};
   }
 
@@ -531,7 +531,9 @@ int oldMain(int argc, char **argv) {
 #define MAX_SOURCE_SIZE (0x100000)
 
 int main(int argc, char const *argv[]) {
-  const size_t size = 2048 * 2048;  
+  const size_t dim = 10240;
+
+  const size_t size = dim * dim * 3;
 
   // Read in the shader
   std::ifstream t("gen.ocl");
@@ -560,26 +562,20 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error creating buffer");
   }
 
-  // Copy the lists A and B to their respective memory buffers
-  // ret = clEnqueueWriteBuffer(command_queue, a_mem_obj, CL_TRUE, 0,
-  //                            LIST_SIZE * sizeof(int), A, 0, NULL, NULL);
-  // ret = clEnqueueWriteBuffer(command_queue, b_mem_obj, CL_TRUE, 0,
-  //                            LIST_SIZE * sizeof(int), B, 0, NULL, NULL);
-
   // Create a program from the kernel source
-  const size_t source_size = strlen(source);
-  cl_program program = clCreateProgramWithSource(context, 1, (const char **)&source, &source_size, &ret);
+  const size_t sourceSize = strlen(source);
+  cl_program program = clCreateProgramWithSource(context, 1, (const char **)&source, &sourceSize, &ret);
 
   // Build the program
   ret = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
   if (ret != CL_SUCCESS) {
     std::cout << "Error building program" << std::endl;
     size_t logSize = 10000;
-    char *build_log = new char[logSize + 1];
-    build_log[logSize] = '\0';
-    clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, logSize, build_log, NULL);
-    std::cout << build_log << std::endl;
-    delete[] build_log;
+    char *buildLog = new char[logSize + 1];
+    buildLog[logSize] = '\0';
+    clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, logSize, buildLog, NULL);
+    std::cout << buildLog << std::endl;
+    delete[] buildLog;
     throw std::runtime_error("Error building program");
   }
 
@@ -596,24 +592,13 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  // ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&b_mem_obj);
-  // ret = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&c_mem_obj);
-
-  // // Execute the OpenCL kernel on the list
-  // size_t global_item_size = LIST_SIZE; // Process the entire lists
-
-  size_t local_item_size[2] = {16, 16};
-  size_t global_item_size[2] = {2048, 2048};
-  ret = clEnqueueNDRangeKernel(command_queue, kernel, 2, NULL, global_item_size, local_item_size, 0, NULL, NULL);
+  size_t localWorkSize[2] = {16, 16};
+  size_t globalWorkSize[2] = {dim, dim};
+  ret = clEnqueueNDRangeKernel(command_queue, kernel, 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
   if (ret != CL_SUCCESS) {
     std::cout << "Error enqueueing kernel" << std::endl;
     throw std::runtime_error("Error enqueueing kernel");
   }
-
-  // // Read the memory buffer C on the device to the local variable C
-  // int *C = (int *)malloc(sizeof(int) * LIST_SIZE);
-  // ret = clEnqueueReadBuffer(command_queue, c_mem_obj, CL_TRUE, 0,
-  //                           LIST_SIZE * sizeof(int), C, 0, NULL, NULL);
 
   float *out = new float[size];
   ret = clEnqueueReadBuffer(command_queue, out_mem_obj, CL_TRUE, 0, size * sizeof(float), out, 0, NULL, NULL);
@@ -623,27 +608,9 @@ int main(int argc, char const *argv[]) {
   }
 
   ImageWriter writer;
-  Image image = imageFromFloats(out, 2048, 2048);
+  Image image = imageFromFloats(out, dim, dim);
   std::cout << "Writing image" << std::endl;
   writer.writePNG("noise.png", image);
-
-  // // Display the result to the screen
-  // for (i = 0; i < LIST_SIZE; i++)
-  //   printf("%d + %d = %d\n", A[i], B[i], C[i]);
-
-  // // Clean up
-  // ret = clFlush(command_queue);
-  // ret = clFinish(command_queue);
-  // ret = clReleaseKernel(kernel);
-  // ret = clReleaseProgram(program);
-  // ret = clReleaseMemObject(a_mem_obj);
-  // ret = clReleaseMemObject(b_mem_obj);
-  // ret = clReleaseMemObject(c_mem_obj);
-  // ret = clReleaseCommandQueue(command_queue);
-  // ret = clReleaseContext(context);
-  // free(A);
-  // free(B);
-  // free(C);
 
   delete[] out;
   return 0;
