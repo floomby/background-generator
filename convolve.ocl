@@ -1,0 +1,101 @@
+
+// 5x5 gausion convolution kernel
+__constant float convolutionKernel[5][5] = {
+  { 2,  4,  5,  4, 2 },
+  { 4,  9, 12,  9, 4 },
+  { 5, 12, 15, 12, 5 },
+  { 4,  9, 12,  9, 4 },
+  { 2,  4,  5,  4, 2 }
+};
+  
+const float kernelSum = 159.0f;
+
+float4 valueAt(
+  __constant float4 *topLeft,
+  __constant float4 *top,
+  __constant float4 *topRight,
+  __constant float4 *right,
+  __constant float4 *botomRight,
+  __constant float4 *botom,
+  __constant float4 *botomLeft,
+  __constant float4 *left,
+  __constant float4 *center,
+  int x, int y, int width, int height) {
+    int newY = y;
+    if (y < 0) {
+      newY = y + height;
+    } else if (y >= height) {
+      newY = y - height;
+    }
+    int newX = x;
+    if (x < 0) {
+      newX = x + width;
+    } else if (x >= width) {
+      newX = x - width;
+    }
+
+    const int flatCoord = newY + newX * height;
+
+    if (y < 0) {
+      if (x < 0) {
+        return topLeft[flatCoord];
+      } else if (x >= width) {
+        return topRight[flatCoord];
+      } else {
+        return top[flatCoord];
+      }
+    }
+
+    if (y >= height) {
+      if (x < 0) {
+        return botomLeft[flatCoord];
+      } else if (x >= width) {
+        return botomRight[flatCoord];
+      } else {
+        return botom[flatCoord];
+      }
+    }
+
+    if (x < 0) {
+      return left[flatCoord];
+    } else if (x >= width) {
+      return right[flatCoord];
+    }
+
+    return center[flatCoord];
+}
+
+// These are just the chunks (it is going to be silly to shuffle things around on the cpu, so we just load in a whole chunk)
+__kernel void convolve(
+  __constant float4 *topLeft,
+  __constant float4 *top,
+  __constant float4 *topRight,
+  __constant float4 *right,
+  __constant float4 *botomRight,
+  __constant float4 *botom,
+  __constant float4 *botomLeft,
+  __constant float4 *left,
+  __constant float4 *center,
+  __global float4 *output) {
+  int x = get_global_id(0);
+  int y = get_global_id(1);
+
+  int oX = x - get_global_offset(0);
+  int oY = y - get_global_offset(1);
+
+  int width = get_global_size(0);
+  int height = get_global_size(1);
+
+  float4 sum = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+
+  for (int i = -0; i <= 0; i++) {
+    for (int j = -0; j <= 0; j++) {
+      float4 value = valueAt(topLeft, top, topRight, right, botomRight, botom, botomLeft, left, center, x + i, y + j, width, height);
+      sum += value * convolutionKernel[i + 2][j + 2];
+    }
+  }  
+
+  sum /= 15;
+
+  output[y + x * height] = sum;
+  }

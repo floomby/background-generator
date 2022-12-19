@@ -130,13 +130,9 @@ Image imageFromFloats(float *data, size_t width, size_t height) {
   return image;
 }
 
-class ImageWriter {
-private:
-  spng_ctx *ctx;
-
-public:
-  void writePNG(const std::string &filename, const std::vector<Pixel> &pixels, unsigned width, unsigned height) {
-    ctx = spng_ctx_new(SPNG_CTX_ENCODER);
+struct ImageWriter {
+  static void writePNG(const std::string &filename, const std::vector<Pixel> &pixels, unsigned width, unsigned height) {
+    spng_ctx *ctx = spng_ctx_new(SPNG_CTX_ENCODER);
     assert(pixels.size() == width * height);
 
     // open file
@@ -169,8 +165,8 @@ public:
     spng_ctx_free(ctx);
   }
 
-  void writePNG(const std::string &filename, const Image &image) {
-    writePNG(filename, image.pixels, image.width, image.height);
+  static void writePNG(const std::string &filename, const Image &image) {
+    ImageWriter::writePNG(filename, image.pixels, image.width, image.height);
   }
 };
 
@@ -201,18 +197,28 @@ namespace std {
 
 void testImageWriter() {
   Image image = createTestImage();
-  ImageWriter writer;
-  writer.writePNG("test.png", image);
-  writer.writePNG("test2.png", image.pixels, image.width, image.height);
+  ImageWriter::writePNG("test.png", image);
+  ImageWriter::writePNG("test2.png", image.pixels, image.width, image.height);
 }
 
+class GridOfChunks;
+
 class Chunk : public std::enable_shared_from_this<Chunk> {
-  float *data;
+  friend class GridOfChunks;
+  float *data = nullptr;
   size_t dimension;
   size_t offset[2];
   std::mutex mutex;
   std::string swapFileName;
 
+  std::shared_ptr<Chunk> topLeft;
+  std::shared_ptr<Chunk> top;
+  std::shared_ptr<Chunk> topRight;
+  std::shared_ptr<Chunk> right;
+  std::shared_ptr<Chunk> bottomRight;
+  std::shared_ptr<Chunk> bottom;
+  std::shared_ptr<Chunk> bottomLeft;
+  std::shared_ptr<Chunk> left;
 public:
   Chunk(size_t dimension, std::array<size_t, 2> offset) {
     assert(offset[0] % dimension == 0);
@@ -220,8 +226,7 @@ public:
     this->dimension = dimension;
     this->offset[0] = offset[0];
     this->offset[1] = offset[1];
-    data = new float[dimension * dimension * 4];
-    std::memset(data, 0, dimension * dimension * 4 * sizeof(float));
+    mutex.lock();
     swapFileName = std::to_string(offset[0] / dimension) + "_" + std::to_string(offset[1] / dimension);
   }
   ~Chunk() { delete[] data; }
@@ -230,9 +235,8 @@ public:
     const auto self = shared_from_this();
     std::thread t([self, filename] {
       std::scoped_lock lock(self->mutex);
-      ImageWriter writer;
       Image image = imageFromFloats(self->data, self->dimension, self->dimension);
-      writer.writePNG(filename, image);
+      ImageWriter::writePNG(filename, image);
       std::cout << "Wrote " << filename << std::endl;
     });
     return t;
@@ -241,6 +245,45 @@ public:
   Chunk &operator=(const Chunk &) = delete;
   Chunk(Chunk &&) = delete;
   Chunk &operator=(Chunk &&) = delete;
+
+  bool canConvolve() {
+    return topLeft != nullptr && top != nullptr && topRight != nullptr && right != nullptr &&
+           bottomRight != nullptr && bottom != nullptr && bottomLeft != nullptr && left != nullptr;
+  }
+
+  std::shared_ptr<Chunk> getNeighbor(size_t i) {
+    switch (i) {
+    case 0:
+      return topLeft;
+    case 1:
+      return top;
+    case 2:
+      return topRight;
+    case 3:
+      return right;
+    case 4:
+      return bottomRight;
+    case 5:
+      return bottom;
+    case 6:
+      return bottomLeft;
+    case 7:
+      return left;
+    case 8:
+      return shared_from_this();
+    default:
+      throw std::runtime_error("Invalid index");
+    }
+  }
+
+  void init() {
+    if (data != nullptr) {
+      return;
+    }
+    data = new float[dimension * dimension * 4];
+    std::memset(data, 0, dimension * dimension * 4 * sizeof(float));
+    mutex.unlock();
+  }
 
   void swapOutToDisk() {
     if (mutex.try_lock()) {
@@ -254,6 +297,9 @@ public:
   }
 
   void swapInFromDisk() {
+    if (data == nullptr) {
+      throw std::runtime_error("Chunk never initialized: " + swapFileName);
+    }
     data = new float[dimension * dimension * 4];
     std::ifstream file(swapFileName, std::ios::binary);
     file.read((char *)data, dimension * dimension * 4 * sizeof(float));
@@ -262,6 +308,10 @@ public:
   }
 
   void generate(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer) {
+    if (data == nullptr) {
+      throw std::runtime_error("Chunk never initialized: " + swapFileName);
+    }
+
     if (!mutex.try_lock()) {
       std::cout << "Failed to lock mutex (aborting): " << swapFileName << std::endl;
       return;
@@ -288,10 +338,172 @@ public:
 
     mutex.unlock();
   }
+
+  void convolve(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer) {
+    if (!mutex.try_lock()) {
+      std::cout << "Failed to lock mutex (aborting): " << swapFileName << std::endl;
+      return;
+    }
+
+    std::cout << "Convolving " << swapFileName << std::endl;
+
+    cl_int ret{CL_SUCCESS};
+
+    size_t globalWorkSize[2] = {dimension, dimension};
+    size_t localWorkSize[2] = {16, 16};
+
+    ret = clEnqueueNDRangeKernel(queue, kernel, 2, this->offset, globalWorkSize, localWorkSize, 0, NULL, NULL);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error enqueuing kernel (convolution)" << std::endl;
+      throw std::runtime_error("Error enqueuing kernel");
+    }
+
+    ret = clEnqueueReadBuffer(queue, outBuffer, CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), data, 0, NULL, NULL);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error reading buffer (convolution): " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error reading buffer");
+    }
+
+    mutex.unlock();
+  }
 };
 
+class GridOfChunks {
+  std::shared_ptr<Chunk> dead;
+  std::vector<std::shared_ptr<Chunk>> chunks;
+  size_t dimension;
+
+  std::shared_ptr<Chunk> getChunk(size_t x, size_t y) {
+    if (x < 0 || y < 0 || x >= cellCount || y >= cellCount) {
+      return dead;
+    }
+    return chunks[x + y * cellCount];
+  }
+
+public:
+  size_t cellCount;
+  GridOfChunks(size_t cellCount, size_t dimension) {
+    this->cellCount = cellCount;
+    this->dimension = dimension;
+
+    dead = std::make_shared<Chunk>(dimension, std::array<size_t, 2>({0, 0}));
+    dead->init();
+
+    for (size_t x = 0; x < cellCount; x++) {
+      for (size_t y = 0; y < cellCount; y++) {
+        std::shared_ptr<Chunk> chunk = std::make_shared<Chunk>(dimension, std::array<size_t, 2>({x * dimension, y * dimension}));
+        chunk->topLeft = dead;
+        chunk->top = dead;
+        chunk->topRight = dead;
+        chunk->right = dead;
+        chunk->bottomRight = dead;
+        chunk->bottom = dead;
+        chunk->bottomLeft = dead;
+        chunk->left = dead;
+        chunks.push_back(chunk);
+
+        chunk->init();
+      }
+    }
+
+    for (size_t x = 0; x < cellCount; x++) {
+      for (size_t y = 0; y < cellCount; y++) {
+        std::shared_ptr<Chunk> chunk = chunks[x + y * cellCount];
+        chunk->topLeft = getChunk(x - 1, y - 1);
+        chunk->top = getChunk(x, y - 1);
+        chunk->topRight = getChunk(x + 1, y - 1);
+        chunk->right = getChunk(x + 1, y);
+        chunk->bottomRight = getChunk(x + 1, y + 1);
+        chunk->bottom = getChunk(x, y + 1);
+        chunk->bottomLeft = getChunk(x - 1, y + 1);
+        chunk->left = getChunk(x - 1, y);
+      }
+    }
+  }
+
+  // This is pretty dumb, but I need something to get started (I am pretty sure it still beats cpu convolution)
+  // I should at least put it the check for dead chunk to avoid redundant copies
+  auto bindForConvolution(
+    const cl_context &context,
+    const cl_command_queue &queue,
+    const cl_kernel &kernel,
+    size_t x,
+    size_t y,
+    const std::array<cl_mem, 9> &buffers
+  ) {
+    cl_uint ret{CL_SUCCESS};
+    const auto chunk = chunks[x + y * cellCount];
+
+    assert(chunk->canConvolve());
+
+    for (size_t i = 0; i < 9; i++) {
+      assert(chunk->getNeighbor(i)->data != nullptr);
+      ret = clEnqueueWriteBuffer(queue, buffers[i], CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), chunk->getNeighbor(i)->data, 0, NULL, NULL);
+      if (ret != CL_SUCCESS) {
+        std::cout << "Error writing buffer: " << getErrorString(ret) << std::endl;
+        throw std::runtime_error("Error writing buffer");
+      }
+
+      ret = clSetKernelArg(kernel, i, sizeof(cl_mem), &buffers[i]);
+      if (ret != CL_SUCCESS) {
+        std::cout << "Error setting kernel arg: " << getErrorString(ret) << std::endl;
+        throw std::runtime_error("Error setting kernel arg");
+      }
+    }
+
+    return chunk;
+  }
+
+  std::array<cl_mem, 9> createBuffers(const cl_context &context) {
+    std::array<cl_mem, 9> buffers;
+
+    cl_int ret{CL_SUCCESS};
+
+    for (size_t i = 0; i < 9; i++) {
+      buffers[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, dimension * dimension * 4 * sizeof(float), NULL, &ret);
+      if (ret != CL_SUCCESS) {
+        std::cout << "Error creating buffer: " << getErrorString(ret) << std::endl;
+        throw std::runtime_error("Error creating buffer");
+      }
+    }
+
+    return buffers;
+  }
+
+  void doGenerationNoSwap(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer) {
+    // Deal with changing the program somewhere here or somewhere else
+
+    for (auto &chunk : chunks) {
+      chunk->generate(context, queue, kernel, outBuffer);
+    }
+  }
+
+  void writeAllPNGs() {
+    std::vector<std::thread> threads;
+
+    for (auto &chunk : chunks) {
+      threads.push_back(chunk->dumpPNG());
+    }
+
+    for (auto &thread : threads) {
+      thread.join();
+    }
+  }
+};
+
+
+/*
+Coordinate system is:
+
+0 -> x
+|
+v
+y
+
+In memory it is y contiguous, i.e. (x_0, y_0), (x_0, y_1), (x_0, y_2)...
+*/
+
 int main(int argc, char const *argv[]) {
-  // Read in the shader
   std::ifstream t("gen.ocl");
   std::string source_str((std::istreambuf_iterator<char>(t)), std::istreambuf_iterator<char>());
 
@@ -323,6 +535,7 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error creating command queue");
   }
 
+  // Setting up the generation program and buffers should be somewhere else
   const size_t sourceSize = strlen(source);
   cl_program program = clCreateProgramWithSource(context, 1, (const char **)&source, &sourceSize, &ret);
 
@@ -356,21 +569,80 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  std::vector <std::thread> threads;
+  GridOfChunks grid(2, 2048);
 
-  auto chunk = std::make_shared<Chunk>(2048, std::array<size_t, 2>({0UL, 0UL}));
-  chunk->generate(context, command_queue, kernel, outBuffer);
-  threads.push_back(chunk->dumpPNG());
+  grid.doGenerationNoSwap(context, command_queue, kernel, outBuffer);
 
-  chunk = std::make_shared<Chunk>(2048, std::array<size_t, 2>({2048UL, 0UL}));
-  chunk->generate(context, command_queue, kernel, outBuffer);
-  threads.push_back(chunk->dumpPNG());
+  // release the kernel
+  clReleaseKernel(kernel);
+
+  // release the program
+  clReleaseProgram(program);
+
+  // load the convolution program
+  std::ifstream t2("convolve.ocl");
+  std::string source_str2((std::istreambuf_iterator<char>(t2)), std::istreambuf_iterator<char>());
+
+  const char *source2 = source_str2.c_str();
+  const size_t sourceSize2 = strlen(source2);
+
+  cl_program program2 = clCreateProgramWithSource(context, 1, (const char **)&source2, &sourceSize2, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating convolution program" << std::endl;
+    throw std::runtime_error("Error creating program");
+  }
+
+  ret = clBuildProgram(program2, 1, &device_id, NULL, NULL, NULL);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error building convolution program" << std::endl;
+    size_t logSize = 10000;
+    char *buildLog = new char[logSize + 1];
+    buildLog[logSize] = '\0';
+    clGetProgramBuildInfo(program2, device_id, CL_PROGRAM_BUILD_LOG, logSize, buildLog, NULL);
+    std::cout << buildLog << std::endl;
+    delete[] buildLog;
+    throw std::runtime_error("Error building program");
+  }
+
+  cl_kernel kernel2 = clCreateKernel(program2, "convolve", &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating convolution kernel" << std::endl;
+    throw std::runtime_error("Error creating kernel");
+  }
+
+  const auto buffers = grid.createBuffers(context);
+
+  ret = clSetKernelArg(kernel2, 9, sizeof(cl_mem), &outBuffer);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting kernel arg" << std::endl;
+    throw std::runtime_error("Error setting kernel arg");
+  }
+
+  std::cout << "Convolution" << std::endl;
+  for (size_t x = 0; x < grid.cellCount; x++) {
+    for (size_t y = 0; y < grid.cellCount; y++) {
+      std::cout << "Convolution " << x << ", " << y << std::endl;
+      auto chunk = grid.bindForConvolution(context, command_queue, kernel2, x, y, buffers);
+      chunk->convolve(context, command_queue, kernel2, outBuffer);
+    }
+  }
 
   clReleaseMemObject(outBuffer);
 
-  for (auto &thread : threads) {
-    thread.join();
+  for (auto &buf : buffers) {
+    clReleaseMemObject(buf);
   }
+
+  // release the kernel
+  clReleaseKernel(kernel2);
+
+  // release the program
+  clReleaseProgram(program2);
+
+  // release the command queue
+  clReleaseCommandQueue(command_queue);
+
+  grid.writeAllPNGs();
 
   return 0;
 }
