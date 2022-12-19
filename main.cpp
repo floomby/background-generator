@@ -13,6 +13,7 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <fstream>
 
 #include <CL/cl.h>
 
@@ -184,8 +185,8 @@ struct Image {
             }
 
             const Pixel &pixel = pixels[py * width + px];
-            const float weight = kernel.data[ky * kernel.width + kx] /
-                                 kernel.total;
+            const float weight =
+                kernel.data[ky * kernel.width + kx] / kernel.total;
 
             r += float(pixel.r) * weight;
             g += float(pixel.g) * weight;
@@ -204,6 +205,22 @@ struct Image {
     pixels = result;
   }
 };
+
+Image imageFromFloats(float *data, size_t width, size_t height) {
+  Image image;
+  image.width = width;
+  image.height = height;
+
+  image.pixels.resize(width * height);
+  for (size_t i = 0; i < image.pixels.size(); i++) {
+    image.pixels[i] = {.r = std::byte(data[i] * 255.0f),
+                       .g = std::byte(data[i] * 255.0f),
+                       .b = std::byte(data[i] * 255.0f),
+                       .a = std::byte(255)};
+  }
+
+  return image;
+}
 
 class ImageWriter {
 private:
@@ -399,21 +416,27 @@ float multiOrderNoiseAt(const Vector &where, const OrderDensities &orders,
 }
 
 // clang-format off
-const auto orders = OrderDensities{std::move(std::vector<std::tuple<int, float, float>>{
+const auto orders2 = OrderDensities{std::move(std::vector<std::tuple<int, float, float>>{
   {2, 2.0f, 0.0f},
   // {5, 1.0f, 0.0f},
-  // {64, 1.0f, 0.0f},
-  // {35, 1.0f, 0.4f},
-  {500, 1.0f, 0.4f},
-  {868, 1.0f, 0.2f}
+  {64, 1.0f, 0.3f},
+  {70, 1.0f, 0.3f},
+  {30, 1.0f, 0.3f},
+  {110, 1.0f, 0.3f},
+  {202, 1.0f, 0.3f},
+  {500, 2.0f, 0.0f},
+  {868, 2.0f, 0.0f}
 })};
 
-const auto orders2 = OrderDensities{std::move(std::vector<std::tuple<int, float, float>>{
+const auto orders = OrderDensities{std::move(std::vector<std::tuple<int, float, float>>{
   // {2, 2.0f, 0.0f},
-  {5, 1.0f, 0.0f},
+  {5, 1.0f, 0.1f},
   // {135, 1.0f, 0.0f},
-  {800, 1.0f, 0.4f},
-  {1768, 3.0f, 0.2f}
+  {800, 1.0f, 0.0f},
+  {915, 1.0f, 0.0f},
+  {1300, 1.0f, 0.0f},
+  {1630, 1.0f, 0.0f},
+  {1768, 3.0f, 0.0f}
 })};
 
 const auto highOrder = OrderDensities{std::move(std::vector<std::tuple<int, float, float>>{
@@ -447,15 +470,28 @@ Image perlinNoise(int width, int height, const OrderDensities &orders,
   return image;
 }
 
-int main(int argc, char **argv) {
-  Image image = perlinNoise(2048, 2048, orders);
-  Image image2 = perlinNoise(2048, 2048, orders2, 1);
-  Image image3 = perlinNoise(2048, 2048, highOrder, 2);
-  Image image4 = perlinNoise(2048, 2048, highOrder2, 3);
+int oldMain(int argc, char **argv) {
+  Image image = perlinNoise(4096, 4096, orders);
+  Image image2 = perlinNoise(4096, 4096, orders2, 1);
+  Image image3 = perlinNoise(4096, 4096, highOrder, 2);
+  Image image4 = perlinNoise(4096, 4096, highOrder2, 3);
+
+  // 5x5 gaussian kernel
+  const Kernel kernel{{1.0f,  4.0f,  6.0f,  4.0f,  1.0f,  4.0f,  16.0f,
+                       24.0f, 16.0f, 4.0f,  6.0f,  24.0f, 36.0f, 24.0f,
+                       6.0f,  4.0f,  16.0f, 24.0f, 16.0f, 4.0f,  1.0f,
+                       4.0f,  6.0f,  4.0f,  1.0f},
+                      5,
+                      5,
+                      256.0f};
 
   image2.rotate();
+  image2.convolve(kernel);
+  image2.convolve(kernel);
+  image2.multiply(1.2f);
+
   Image image5 = image2.sub(image);
-  image5.multiply(5.0f);
+  image5.multiply(3.0f);
 
   Image image6 = image3.mult(image5);
   Image image7 = image4.mult(image5);
@@ -465,25 +501,23 @@ int main(int argc, char **argv) {
 
   image7.bluify();
   // 3x3 gaussian kernel
-  const Kernel kernel{{
-    1.0f, 2.0f, 1.0f,
-    2.0f, 4.0f, 2.0f,
-    1.0f, 2.0f, 1.0f}, 3, 3, 16.0f};
+  const Kernel kernel2{
+      {1.0f, 2.0f, 1.0f, 2.0f, 4.0f, 2.0f, 1.0f, 2.0f, 1.0f}, 3, 3, 16.0f};
 
-  image7.convolve(kernel);
+  image7.convolve(kernel2);
 
   Image image8 = image6.add(image7);
   Image image9 = image8.add(image7);
 
-  image8.convolve(kernel);
-  image8.convolve(kernel);
-  image8.convolve(kernel);
-  image8.convolve(kernel);
-  image8.convolve(kernel);
-  image8.convolve(kernel);
-  image8.convolve(kernel);
-  image8.convolve(kernel);
-  
+  image8.convolve(kernel2);
+  image8.convolve(kernel2);
+  image8.convolve(kernel2);
+  image8.convolve(kernel2);
+  image8.convolve(kernel2);
+  image8.convolve(kernel2);
+  image8.convolve(kernel2);
+  image8.convolve(kernel2);
+
   image8.multiply(0.8f);
   Image image10 = image8.add(image9);
 
@@ -496,30 +530,14 @@ int main(int argc, char **argv) {
 
 #define MAX_SOURCE_SIZE (0x100000)
 
-int oldMain(int argc, char const *argv[]) {
-  // Create the two input vectors
-  int i;
-  const int LIST_SIZE = 1024;
-  int *A = (int *)malloc(sizeof(int) * LIST_SIZE);
-  int *B = (int *)malloc(sizeof(int) * LIST_SIZE);
-  for (i = 0; i < LIST_SIZE; i++) {
-    A[i] = i;
-    B[i] = LIST_SIZE - i;
-  }
+int main(int argc, char const *argv[]) {
+  const size_t size = 2048 * 2048;  
 
-  // Load the kernel source code into the array source_str
-  FILE *fp;
-  char *source_str;
-  size_t source_size;
+  // Read in the shader
+  std::ifstream t("gen.ocl");
+  std::string source_str((std::istreambuf_iterator<char>(t)), std::istreambuf_iterator<char>());
 
-  fp = fopen("vector_add_kernel.ocl", "r");
-  if (!fp) {
-    fprintf(stderr, "Failed to load kernel.\n");
-    exit(1);
-  }
-  source_str = (char *)malloc(MAX_SOURCE_SIZE);
-  source_size = fread(source_str, 1, MAX_SOURCE_SIZE, fp);
-  fclose(fp);
+  const char *source = source_str.c_str();
 
   // Get platform and device information
   cl_platform_id platform_id = NULL;
@@ -527,74 +545,106 @@ int oldMain(int argc, char const *argv[]) {
   cl_uint ret_num_devices;
   cl_uint ret_num_platforms;
   cl_int ret = clGetPlatformIDs(1, &platform_id, &ret_num_platforms);
-  ret = clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id,
-                       &ret_num_devices);
+  ret = clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id, &ret_num_devices);
 
   // Create an OpenCL context
   cl_context context = clCreateContext(NULL, 1, &device_id, NULL, NULL, &ret);
 
   // Create a command queue
-  cl_command_queue command_queue =
-      clCreateCommandQueue(context, device_id, 0, &ret);
+  cl_command_queue command_queue = clCreateCommandQueue(context, device_id, 0, &ret);
 
   // Create memory buffers on the device for each vector
-  cl_mem a_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY,
-                                    LIST_SIZE * sizeof(int), NULL, &ret);
-  cl_mem b_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY,
-                                    LIST_SIZE * sizeof(int), NULL, &ret);
-  cl_mem c_mem_obj = clCreateBuffer(context, CL_MEM_WRITE_ONLY,
-                                    LIST_SIZE * sizeof(int), NULL, &ret);
+  cl_mem out_mem_obj = clCreateBuffer(context, CL_MEM_WRITE_ONLY, size * sizeof(float), NULL, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating buffer" << std::endl;
+    throw std::runtime_error("Error creating buffer");
+  }
 
   // Copy the lists A and B to their respective memory buffers
-  ret = clEnqueueWriteBuffer(command_queue, a_mem_obj, CL_TRUE, 0,
-                             LIST_SIZE * sizeof(int), A, 0, NULL, NULL);
-  ret = clEnqueueWriteBuffer(command_queue, b_mem_obj, CL_TRUE, 0,
-                             LIST_SIZE * sizeof(int), B, 0, NULL, NULL);
+  // ret = clEnqueueWriteBuffer(command_queue, a_mem_obj, CL_TRUE, 0,
+  //                            LIST_SIZE * sizeof(int), A, 0, NULL, NULL);
+  // ret = clEnqueueWriteBuffer(command_queue, b_mem_obj, CL_TRUE, 0,
+  //                            LIST_SIZE * sizeof(int), B, 0, NULL, NULL);
 
   // Create a program from the kernel source
-  cl_program program =
-      clCreateProgramWithSource(context, 1, (const char **)&source_str,
-                                (const size_t *)&source_size, &ret);
+  const size_t source_size = strlen(source);
+  cl_program program = clCreateProgramWithSource(context, 1, (const char **)&source, &source_size, &ret);
 
   // Build the program
   ret = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error building program" << std::endl;
+    size_t logSize = 10000;
+    char *build_log = new char[logSize + 1];
+    build_log[logSize] = '\0';
+    clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, logSize, build_log, NULL);
+    std::cout << build_log << std::endl;
+    delete[] build_log;
+    throw std::runtime_error("Error building program");
+  }
 
   // Create the OpenCL kernel
-  cl_kernel kernel = clCreateKernel(program, "vector_add", &ret);
+  cl_kernel kernel = clCreateKernel(program, "perlin", &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating kernel" << std::endl;
+    throw std::runtime_error("Error creating kernel");
+  }
 
-  // Set the arguments of the kernel
-  ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&a_mem_obj);
-  ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&b_mem_obj);
-  ret = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&c_mem_obj);
+  ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&out_mem_obj);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting kernel arg" << std::endl;
+    throw std::runtime_error("Error setting kernel arg");
+  }
 
-  // Execute the OpenCL kernel on the list
-  size_t global_item_size = LIST_SIZE; // Process the entire lists
-  size_t local_item_size = 64;         // Divide work items into groups of 64
-  ret =
-      clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, &global_item_size,
-                             &local_item_size, 0, NULL, NULL);
+  // ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&b_mem_obj);
+  // ret = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&c_mem_obj);
 
-  // Read the memory buffer C on the device to the local variable C
-  int *C = (int *)malloc(sizeof(int) * LIST_SIZE);
-  ret = clEnqueueReadBuffer(command_queue, c_mem_obj, CL_TRUE, 0,
-                            LIST_SIZE * sizeof(int), C, 0, NULL, NULL);
+  // // Execute the OpenCL kernel on the list
+  // size_t global_item_size = LIST_SIZE; // Process the entire lists
 
-  // Display the result to the screen
-  for (i = 0; i < LIST_SIZE; i++)
-    printf("%d + %d = %d\n", A[i], B[i], C[i]);
+  size_t local_item_size[2] = {16, 16};
+  size_t global_item_size[2] = {2048, 2048};
+  ret = clEnqueueNDRangeKernel(command_queue, kernel, 2, NULL, global_item_size, local_item_size, 0, NULL, NULL);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error enqueueing kernel" << std::endl;
+    throw std::runtime_error("Error enqueueing kernel");
+  }
 
-  // Clean up
-  ret = clFlush(command_queue);
-  ret = clFinish(command_queue);
-  ret = clReleaseKernel(kernel);
-  ret = clReleaseProgram(program);
-  ret = clReleaseMemObject(a_mem_obj);
-  ret = clReleaseMemObject(b_mem_obj);
-  ret = clReleaseMemObject(c_mem_obj);
-  ret = clReleaseCommandQueue(command_queue);
-  ret = clReleaseContext(context);
-  free(A);
-  free(B);
-  free(C);
+  // // Read the memory buffer C on the device to the local variable C
+  // int *C = (int *)malloc(sizeof(int) * LIST_SIZE);
+  // ret = clEnqueueReadBuffer(command_queue, c_mem_obj, CL_TRUE, 0,
+  //                           LIST_SIZE * sizeof(int), C, 0, NULL, NULL);
+
+  float *out = new float[size];
+  ret = clEnqueueReadBuffer(command_queue, out_mem_obj, CL_TRUE, 0, size * sizeof(float), out, 0, NULL, NULL);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error reading buffer" << std::endl;
+    throw std::runtime_error("Error reading buffer");
+  }
+
+  ImageWriter writer;
+  Image image = imageFromFloats(out, 2048, 2048);
+  std::cout << "Writing image" << std::endl;
+  writer.writePNG("noise.png", image);
+
+  // // Display the result to the screen
+  // for (i = 0; i < LIST_SIZE; i++)
+  //   printf("%d + %d = %d\n", A[i], B[i], C[i]);
+
+  // // Clean up
+  // ret = clFlush(command_queue);
+  // ret = clFinish(command_queue);
+  // ret = clReleaseKernel(kernel);
+  // ret = clReleaseProgram(program);
+  // ret = clReleaseMemObject(a_mem_obj);
+  // ret = clReleaseMemObject(b_mem_obj);
+  // ret = clReleaseMemObject(c_mem_obj);
+  // ret = clReleaseCommandQueue(command_queue);
+  // ret = clReleaseContext(context);
+  // free(A);
+  // free(B);
+  // free(C);
+
+  delete[] out;
   return 0;
 }

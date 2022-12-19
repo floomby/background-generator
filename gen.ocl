@@ -1,0 +1,51 @@
+float2 hash(int x, int y, int seed) {
+  int hash = x * 73856093 ^ y * 19349663 ^ seed * 83492791;
+  hash = ((hash >> 13) ^ hash >> 7);
+  float angle = (float)hash;
+  return (float2)(cos(angle), sin(angle));
+}
+
+float lerp(float a, float b, float t) {
+  return a + t * (b - a);
+}
+
+const int2 offsets[4] = {(int2)(0, 0), (int2)(1, 0), (int2)(0, 1), (int2)(1, 1)};
+
+float noise(float2 coords) {
+  int2 i = (int2)(floor(coords.x), floor(coords.y));
+
+  float2 gradients[4];
+  for (int j = 0; j < 4; j++) {
+    gradients[j] = hash(i.x + offsets[j].x, i.y + offsets[j].y, 0);
+  }
+
+  float2 dists[4];
+  for (int j = 0; j < 4; j++) {
+    dists[j] = coords - (float2)(i.x + offsets[j].x, i.y + offsets[j].y);
+  }
+
+  float2 dotProducts[4];
+  for (int j = 0; j < 4; j++) {
+    dotProducts[j] = dot(dists[j], gradients[j]);
+  }
+
+  float x = smoothstep(0.0f, 1.0f, coords.x - i.x);
+  float y = smoothstep(0.0f, 1.0f, coords.y - i.y);
+
+  float a = lerp(dotProducts[0][0], dotProducts[1][0], x);
+  float b = lerp(dotProducts[2][0], dotProducts[3][0], x);
+
+  float out = lerp(a, b, y);
+  return out * 0.5f + 0.5f;
+}
+
+__kernel void perlin(__global float *out) {
+  int x = get_global_id(0);
+  int y = get_global_id(1);
+
+  float wavelength = 32.0f;
+
+  float2 p = (float2)(x, y) / wavelength;
+
+  out[y * get_global_size(0) + x] = noise(p);
+}
