@@ -1,7 +1,7 @@
 {
     "configurations": [
         {
-            "name": "CYGWIN",
+            "name": "MSYS2",
             "includePath": [
                 "C:/msys64/mingw64/include/boost",
                 "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.0/include"

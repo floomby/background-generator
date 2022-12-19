@@ -4,4 +4,4 @@ This is a tool I am developing for [my space game project](https://github.com/fl
 
 It uses opencl to generate large contiguous backgrounds of nebulas and stars and outputs them as a collection of png tiles.
 
-Currently it only makes crappy nebulas.
+The macro feature definition system is missing.

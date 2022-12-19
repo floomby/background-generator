@@ -17,8 +17,13 @@
 #include <thread>
 #include <tuple>
 #include <vector>
+#include <filesystem>
 
 #include <CL/cl.h>
+
+#include <boost/program_options.hpp>
+
+namespace po = boost::program_options;
 
 #include "libs/spng.h"
 
@@ -285,8 +290,8 @@ public:
       delete[] data[1];
     }
   }
-  std::thread dumpPNG() {
-    std::string filename = "chunk" + swapFileName + ".png";
+  std::thread dumpPNG(const std::string &outDir) {
+    std::string filename = outDir + "/chunk" + swapFileName + ".png";
     const auto self = shared_from_this();
     std::thread t([self, filename] {
       std::scoped_lock lock(self->mutex);
@@ -370,7 +375,9 @@ public:
       return;
     }
 
+#ifdef VERBOSE_CHUNK_OPS
     std::cout << "Clearing " << swapFileName << std::endl;
+#endif
 
     cl_int ret{CL_SUCCESS};
 
@@ -398,7 +405,9 @@ public:
       return;
     }
 
+#ifdef VERBOSE_CHUNK_OPS
     std::cout << "Generating " << swapFileName << std::endl;
+#endif
 
     cl_int ret{CL_SUCCESS};
 
@@ -470,7 +479,9 @@ public:
       return;
     }
 
+#ifdef VERBOSE_CHUNK_OPS
     std::cout << "Mixing down " << swapFileName << std::endl;
+#endif
 
     cl_int ret{CL_SUCCESS};
 
@@ -547,7 +558,9 @@ public:
       return;
     }
 
+#ifdef VERBOSE_CHUNK_OPS
     std::cout << "Convolving " << swapFileName << std::endl;
+#endif
 
     cl_int ret{CL_SUCCESS};
 
@@ -666,7 +679,9 @@ public:
 
     int kernSize = kern.width >> 1;
     
-    std::cout << "Kernel size: " << kernSize << " (" << kern.width << "x" << kern.height << ")" << std::endl;
+#ifdef VERBOSE_CHUNK_OPS
+    std::cout << "Convolution kernel size: " << kernSize << " (" << kern.width << "x" << kern.height << ")" << std::endl;
+#endif
 
     ret = clSetKernelArg(kernel, 11, sizeof(cl_uint), &kernSize);
     if (ret != CL_SUCCESS) {
@@ -676,10 +691,10 @@ public:
 
     auto sums = kern.integrate();
 
-    std::cout << "Kernel sums:" << std::endl;
-    for (auto &s : sums) {
-      std::cout << s << std::endl;
-    }
+    // std::cout << "Kernel sums:" << std::endl;
+    // for (auto &s : sums) {
+    //   std::cout << s << std::endl;
+    // }
 
     ret = clSetKernelArg(kernel, 12, sizeof(cl_float) * 4, sums.data());
     if (ret != CL_SUCCESS) {
@@ -769,11 +784,11 @@ public:
     }
   }
 
-  void writeAllPNGs() {
+  void writeAllPNGs(const std::string &outDir) {
     std::vector<std::thread> threads;
 
     for (auto &chunk : chunks) {
-      threads.push_back(chunk->dumpPNG());
+      threads.push_back(chunk->dumpPNG(outDir));
     }
 
     for (auto &thread : threads) {
@@ -784,7 +799,7 @@ public:
 
 
 /*
-Coordinate system is:
+Coordinate system used by the open cl kernels is:
 
 0 -> x
 |
@@ -794,9 +809,38 @@ y
 In memory it is y contiguous, i.e. (x_0, y_0), (x_0, y_1), (x_0, y_2)...
 */
 
+void ensureDirectoryExists(const std::string &dirName) {
+  // Make the directory if it doesn't exist
+  std::filesystem::path dir(dirName);
+  if (!std::filesystem::exists(dir)) {
+    std::filesystem::create_directory(dir);
+  }
+}
+
 int main(int argc, char const *argv[]) {
-  // testKernelImage();
-  // return 0;
+  po::options_description desc("Allowed options");
+  desc.add_options()
+    ("help", "Print help message")
+    ("chunkCount", po::value<int>()->default_value(2), "Number of chunks per side to generate (total chunks generated is chunkCount^2)")
+    ("chunkDimension", po::value<int>()->default_value(2048), "Size of chunks to generate")
+    ("outputDirectory", po::value<std::string>()->default_value("output"), "Directory to output the pngs")
+  ;
+
+  po::variables_map vm;
+  po::store(po::parse_command_line(argc, argv, desc), vm);
+  po::notify(vm);
+
+  if (vm.count("help")) {
+    std::cout << desc << "\n";
+    return 1;
+  }
+
+  const auto outDir = vm["outputDirectory"].as<std::string>();
+
+  ensureDirectoryExists(outDir);
+
+  int chunkCount = vm["chunkCount"].as<int>();
+  int chunkDimension = vm["chunkDimension"].as<int>();
 
   std::ifstream t("gen.ocl");
   std::string source_str((std::istreambuf_iterator<char>(t)), std::istreambuf_iterator<char>());
@@ -875,17 +919,16 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error creating kernel");
   }
 
-  cl_mem outBuffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, 2048 * 2048 * 4 * sizeof(float), NULL, &ret);
+  cl_mem outBuffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, chunkDimension * chunkDimension * 4 * sizeof(float), NULL, &ret);
   if (ret != CL_SUCCESS) {
     std::cout << "Error creating buffer" << std::endl;
     throw std::runtime_error("Error creating buffer");
   }
 
-  GridOfChunks grid(2, 2048);
+  GridOfChunks grid(chunkCount, chunkDimension);
 
   std::cout << "Clearing memory" << std::endl;
   for (auto &chunk : grid.chunks) {
-    std::cout << "Clearing chunk" << chunk->swapFileName << std::endl;
     chunk->clear(context, command_queue, clearKernel, outBuffer, 0);
   }
 
@@ -1005,7 +1048,7 @@ int main(int argc, char const *argv[]) {
   // release the command queue
   clReleaseCommandQueue(command_queue);
 
-  grid.writeAllPNGs();
+  grid.writeAllPNGs(outDir);
 
   return 0;
 }
