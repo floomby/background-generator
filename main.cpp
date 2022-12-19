@@ -253,26 +253,16 @@ public:
 
   std::shared_ptr<Chunk> getNeighbor(size_t i) {
     switch (i) {
-    case 0:
-      return topLeft;
-    case 1:
-      return top;
-    case 2:
-      return topRight;
-    case 3:
-      return right;
-    case 4:
-      return bottomRight;
-    case 5:
-      return bottom;
-    case 6:
-      return bottomLeft;
-    case 7:
-      return left;
-    case 8:
-      return shared_from_this();
-    default:
-      throw std::runtime_error("Invalid index");
+    case 0: return topLeft;
+    case 1: return top;
+    case 2: return topRight;
+    case 3: return right;
+    case 4: return bottomRight;
+    case 5: return bottom;
+    case 6: return bottomLeft;
+    case 7: return left;
+    case 8: return shared_from_this();
+    default: throw std::runtime_error("Invalid index");
     }
   }
 
@@ -551,7 +541,13 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error building program");
   }
 
-  cl_kernel kernel = clCreateKernel(program, "perlin", &ret);
+  cl_kernel nebulaKernel = clCreateKernel(program, "nebula", &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating kernel" << std::endl;
+    throw std::runtime_error("Error creating kernel");
+  }
+
+  cl_kernel starBackgroundKernel = clCreateKernel(program, "starBackground", &ret);
   if (ret != CL_SUCCESS) {
     std::cout << "Error creating kernel" << std::endl;
     throw std::runtime_error("Error creating kernel");
@@ -563,7 +559,7 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error creating buffer");
   }
 
-  ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), &outBuffer);
+  ret = clSetKernelArg(starBackgroundKernel, 0, sizeof(cl_mem), &outBuffer);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting kernel arg" << std::endl;
     throw std::runtime_error("Error setting kernel arg");
@@ -571,10 +567,10 @@ int main(int argc, char const *argv[]) {
 
   GridOfChunks grid(2, 2048);
 
-  grid.doGenerationNoSwap(context, command_queue, kernel, outBuffer);
+  grid.doGenerationNoSwap(context, command_queue, starBackgroundKernel, outBuffer);
 
-  // release the kernel
-  clReleaseKernel(kernel);
+  clReleaseKernel(nebulaKernel);
+  clReleaseKernel(starBackgroundKernel);
 
   // release the program
   clReleaseProgram(program);
@@ -618,14 +614,12 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  std::cout << "Convolution" << std::endl;
-  for (size_t x = 0; x < grid.cellCount; x++) {
-    for (size_t y = 0; y < grid.cellCount; y++) {
-      std::cout << "Convolution " << x << ", " << y << std::endl;
-      auto chunk = grid.bindForConvolution(context, command_queue, kernel2, x, y, buffers);
-      chunk->convolve(context, command_queue, kernel2, outBuffer);
-    }
-  }
+  // for (size_t x = 0; x < grid.cellCount; x++) {
+  //   for (size_t y = 0; y < grid.cellCount; y++) {
+  //     auto chunk = grid.bindForConvolution(context, command_queue, kernel2, x, y, buffers);
+  //     chunk->convolve(context, command_queue, kernel2, outBuffer);
+  //   }
+  // }
 
   clReleaseMemObject(outBuffer);
 

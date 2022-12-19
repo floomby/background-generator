@@ -99,3 +99,4 @@ __kernel void convolve(
 
   output[y + x * height] = sum;
   }
+  
