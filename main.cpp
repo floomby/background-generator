@@ -98,26 +98,6 @@ const char *getErrorString(cl_int error) {
   }
 }
 
-std::byte safeSubtract(std::byte a, std::byte b) {
-  int ia = (int)a;
-  int ib = (int)b;
-  int result = ia - ib;
-  if (result < 0) {
-    result = 0;
-  }
-  return std::byte(result);
-}
-
-std::byte safeAdd(std::byte a, std::byte b) {
-  int ia = (int)a;
-  int ib = (int)b;
-  int result = ia + ib;
-  if (result > 255) {
-    result = 255;
-  }
-  return std::byte(result);
-}
-
 struct Pixel {
   std::byte r;
   std::byte g;
@@ -140,10 +120,10 @@ Image imageFromFloats(float *data, size_t width, size_t height) {
   image.pixels.resize(width * height);
   for (size_t i = 0; i < image.pixels.size(); i++) {
     image.pixels[i] = {
-      .r = std::byte(data[i * 3] * 255.0f),
-      .g = std::byte(data[i * 3 + 1] * 255.0f),
-      .b = std::byte(data[i * 3 + 2] * 255.0f),
-      .a = std::byte(255)
+      .r = std::byte(data[i * 4] * 255.0f),
+      .g = std::byte(data[i * 4 + 1] * 255.0f),
+      .b = std::byte(data[i * 4 + 2] * 255.0f),
+      .a = std::byte(data[i * 4 + 3] * 255.0f)
     };
   }
 
@@ -240,8 +220,8 @@ public:
     this->dimension = dimension;
     this->offset[0] = offset[0];
     this->offset[1] = offset[1];
-    data = new float[dimension * dimension * 3];
-    std::memset(data, 0, dimension * dimension * 3 * sizeof(float));
+    data = new float[dimension * dimension * 4];
+    std::memset(data, 0, dimension * dimension * 4 * sizeof(float));
     swapFileName = std::to_string(offset[0] / dimension) + "_" + std::to_string(offset[1] / dimension);
   }
   ~Chunk() { delete[] data; }
@@ -265,7 +245,7 @@ public:
   void swapOutToDisk() {
     if (mutex.try_lock()) {
       std::ofstream file(swapFileName, std::ios::binary);
-      file.write((char *)data, dimension * dimension * 3 * sizeof(float));
+      file.write((char *)data, dimension * dimension * 4 * sizeof(float));
       file.close();
       delete[] data;
     } else {
@@ -274,9 +254,9 @@ public:
   }
 
   void swapInFromDisk() {
-    data = new float[dimension * dimension * 3];
+    data = new float[dimension * dimension * 4];
     std::ifstream file(swapFileName, std::ios::binary);
-    file.read((char *)data, dimension * dimension * 3 * sizeof(float));
+    file.read((char *)data, dimension * dimension * 4 * sizeof(float));
     file.close();
     mutex.unlock();
   }
@@ -300,7 +280,7 @@ public:
       throw std::runtime_error("Error enqueuing kernel");
     }
 
-    ret = clEnqueueReadBuffer(queue, outBuffer, CL_TRUE, 0, dimension * dimension * 3 * sizeof(float), data, 0, NULL, NULL);
+    ret = clEnqueueReadBuffer(queue, outBuffer, CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), data, 0, NULL, NULL);
     if (ret != CL_SUCCESS) {
       std::cout << "Error reading buffer: " << getErrorString(ret) << std::endl;
       throw std::runtime_error("Error reading buffer");
@@ -364,7 +344,7 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error creating kernel");
   }
 
-  cl_mem outBuffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, 2048 * 2048 * 3 * sizeof(float), NULL, &ret);
+  cl_mem outBuffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, 2048 * 2048 * 4 * sizeof(float), NULL, &ret);
   if (ret != CL_SUCCESS) {
     std::cout << "Error creating buffer" << std::endl;
     throw std::runtime_error("Error creating buffer");

@@ -61,7 +61,7 @@ __kernel void perlin(__global float *out) {
   int oX = x - get_global_offset(0);
   int oY = y - get_global_offset(1);
 
-  int flatCoord = (oY * get_global_size(0) + oX) * 3;
+  int flatCoord = (oY * get_global_size(0) + oX) * 4;
 
   float4 first = applyWavelengths(longs1, x, y, allWhite, 1.0f, (float4)(0.0f, 0.0f, 0.0f, 0.0f));
   float4 second = applyWavelengths(longs2, x, y, nebulaColors, 0.4f, (float4)(1.0f, 1.0f, 1.3f, 0.0f));
@@ -70,4 +70,5 @@ __kernel void perlin(__global float *out) {
   out[flatCoord] = ret.x;
   out[flatCoord + 1] = ret.y;
   out[flatCoord + 2] = ret.z;
+  out[flatCoord + 3] = 1.0f;
 }
