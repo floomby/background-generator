@@ -98,6 +98,8 @@ const char *getErrorString(cl_int error) {
   }
 }
 
+#include "airyKernel.h"
+
 struct Pixel {
   std::byte r;
   std::byte g;
@@ -107,9 +109,39 @@ struct Pixel {
 
 struct Image {
   std::vector<Pixel> pixels;
-  int width;
-  int height;
+  size_t width;
+  size_t height;
+
+  // Need for convolution kernels
+  std::array<float, 4> integrate() const {
+    std::array<float, 4> result = {0.0f, 0.0f, 0.0f, 1.0f};
+    for (const auto &pixel : pixels) {
+      result[0] += float(pixel.r);
+      result[1] += float(pixel.g);
+      result[2] += float(pixel.b);
+    }
+    return result;
+  }
+
+  void premultiplyAlpha() {
+    for (auto &pixel : pixels) {
+      float alpha = float(pixel.a) / 255.0f;
+      pixel.r = std::byte(float(pixel.r) * alpha);
+      pixel.g = std::byte(float(pixel.g) * alpha);
+      pixel.b = std::byte(float(pixel.b) * alpha);
+    }
+  }
 };
+
+Image testConvKernel() {
+  Image ret;
+  ret.width = 3;
+  ret.height = 3;
+  ret.pixels.resize(9);
+  std::fill(ret.pixels.begin(), ret.pixels.end(), Pixel{std::byte(0), std::byte(0), std::byte(0), std::byte(255)});
+  ret.pixels[4] = Pixel{std::byte(255), std::byte(255), std::byte(255), std::byte(255)};
+  return ret;
+}
 
 // Slow and stupid
 Image imageFromFloats(float *data, size_t width, size_t height) {
@@ -126,6 +158,17 @@ Image imageFromFloats(float *data, size_t width, size_t height) {
       .a = std::byte(data[i * 4 + 3] * 255.0f)
     };
   }
+
+  return image;
+}
+
+Image imageFromGimpExport(const GimpExport &img) {
+  Image image;
+  image.width = img.width;
+  image.height = img.height;
+
+  image.pixels.resize(img.width * img.height);
+  std::memcpy(image.pixels.data(), img.pixel_data, img.width * img.height * sizeof(Pixel));
 
   return image;
 }
@@ -175,8 +218,8 @@ Image createTestImage() {
   image.width = 256;
   image.height = 256;
   image.pixels.resize(image.width * image.height);
-  for (int y = 0; y < image.height; y++) {
-    for (int x = 0; x < image.width; x++) {
+  for (size_t y = 0; y < image.height; y++) {
+    for (size_t x = 0; x < image.width; x++) {
       Pixel &pixel = image.pixels[y * image.width + x];
       pixel.r = std::byte(x);
       pixel.g = std::byte(y);
@@ -199,6 +242,11 @@ void testImageWriter() {
   Image image = createTestImage();
   ImageWriter::writePNG("test.png", image);
   ImageWriter::writePNG("test2.png", image.pixels, image.width, image.height);
+}
+
+void testKernelImage() {
+  Image image = imageFromGimpExport(airyKernel);
+  ImageWriter::writePNG("airyKernel.png", image);
 }
 
 class GridOfChunks;
@@ -411,6 +459,69 @@ public:
     }
   }
 
+  cl_mem kernBuffer = nullptr;
+
+  void bindConvolutionKernel(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const Image &kern) {
+    cl_int ret{CL_SUCCESS};
+
+    assert(kern.height == kern.width);
+    assert(kern.height % 2 == 1);
+    kernBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, kern.width * kern.height * sizeof(float) * 4, NULL, &ret);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error creating buffer: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error creating buffer");
+    }
+
+    float *tmpBuf = new float[kern.width * kern.height * 4];
+    for (size_t i = 0; i < kern.width * kern.height; i++) {
+      tmpBuf[i * 4 + 0] = static_cast<float>(kern.pixels[i].r);
+      tmpBuf[i * 4 + 1] = static_cast<float>(kern.pixels[i].g);
+      tmpBuf[i * 4 + 2] = static_cast<float>(kern.pixels[i].b);
+      tmpBuf[i * 4 + 3] = static_cast<float>(kern.pixels[i].a);
+    }
+
+    ret = clEnqueueWriteBuffer(queue, kernBuffer, CL_TRUE, 0, kern.width * kern.height * sizeof(float) * 4, tmpBuf, 0, NULL, NULL);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error writing buffer: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error writing buffer");
+    }
+
+    ret = clSetKernelArg(kernel, 10, sizeof(cl_mem), &kernBuffer);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error setting kernel argument");
+    }
+
+    delete[] tmpBuf;
+
+    int kernSize = kern.width >> 1;
+    
+    std::cout << "Kernel size: " << kernSize << " (" << kern.width << "x" << kern.height << ")" << std::endl;
+
+    ret = clSetKernelArg(kernel, 11, sizeof(cl_uint), &kernSize);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error setting kernel argument");
+    }
+
+    auto sums = kern.integrate();
+
+    std::cout << "Kernel sums:" << std::endl;
+    for (auto &s : sums) {
+      std::cout << s << std::endl;
+    }
+
+    ret = clSetKernelArg(kernel, 12, sizeof(cl_float) * 4, sums.data());
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error setting kernel argument");
+    }
+  }
+
+  void cleanup() {
+    clReleaseMemObject(kernBuffer);
+  }
+
   // This is pretty dumb, but I need something to get started (I am pretty sure it still beats cpu convolution)
   // I should at least put it the check for dead chunk to avoid redundant copies
   auto bindForConvolution(
@@ -494,6 +605,9 @@ In memory it is y contiguous, i.e. (x_0, y_0), (x_0, y_1), (x_0, y_2)...
 */
 
 int main(int argc, char const *argv[]) {
+  // testKernelImage();
+  // return 0;
+
   std::ifstream t("gen.ocl");
   std::string source_str((std::istreambuf_iterator<char>(t)), std::istreambuf_iterator<char>());
 
@@ -614,12 +728,19 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  // for (size_t x = 0; x < grid.cellCount; x++) {
-  //   for (size_t y = 0; y < grid.cellCount; y++) {
-  //     auto chunk = grid.bindForConvolution(context, command_queue, kernel2, x, y, buffers);
-  //     chunk->convolve(context, command_queue, kernel2, outBuffer);
-  //   }
-  // }
+  Image airyDisk = imageFromGimpExport(airyKernel);
+  airyDisk.premultiplyAlpha();
+  // const Image airyDisk = testConvKernel();
+
+  grid.bindConvolutionKernel(context, command_queue, kernel2, airyDisk);
+  for (size_t x = 0; x < grid.cellCount; x++) {
+    for (size_t y = 0; y < grid.cellCount; y++) {
+      auto chunk = grid.bindForConvolution(context, command_queue, kernel2, x, y, buffers);
+      chunk->convolve(context, command_queue, kernel2, outBuffer);
+    } 
+  }
+
+  grid.cleanup();
 
   clReleaseMemObject(outBuffer);
 

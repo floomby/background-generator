@@ -21,6 +21,13 @@ float4 valueAt(
   __constant float4 *left,
   __constant float4 *center,
   int x, int y, int width, int height) {
+
+    if (x < 0 || x >= width || y < 0 || y >= height) {
+      return (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    return center[y + x * height];
+
     int newY = y;
     if (y < 0) {
       newY = y + height;
@@ -65,7 +72,28 @@ float4 valueAt(
     return center[flatCoord];
 }
 
+float4 fixExtremeSaturation(const float4 input) {
+  float4 output = input;
+
+  float average = (input.x + input.y + input.z) / 3.0f;
+
+  if (input.x > average) {
+    output.x = average;
+  }
+
+  if (input.y > average) {
+    output.y = average;
+  }
+
+  if (input.z > average) {
+    output.z = average;
+  }
+
+  return output;
+}
+
 // These are just the chunks (it is going to be silly to shuffle things around on the cpu, so we just load in a whole chunk)
+// Kernel size might be poorly named, it is really (size - 1) / 2 i.e. 5x5 kernel is 2
 __kernel void convolve(
   __constant float4 *topLeft,
   __constant float4 *top,
@@ -76,7 +104,10 @@ __kernel void convolve(
   __constant float4 *botomLeft,
   __constant float4 *left,
   __constant float4 *center,
-  __global float4 *output) {
+  __global float4 *output,
+  __constant float4 *kern,
+  const int kernelSize,
+  const float4 kernelSum) {
   int x = get_global_id(0);
   int y = get_global_id(1);
 
@@ -87,16 +118,36 @@ __kernel void convolve(
   int height = get_global_size(1);
 
   float4 sum = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+  float4 out = valueAt(topLeft, top, topRight, right, botomRight, botom, botomLeft, left, center, oX, oY, width, height);
 
-  for (int i = -0; i <= 0; i++) {
-    for (int j = -0; j <= 0; j++) {
-      float4 value = valueAt(topLeft, top, topRight, right, botomRight, botom, botomLeft, left, center, x + i, y + j, width, height);
-      sum += value * convolutionKernel[i + 2][j + 2];
+  for (int i = -kernelSize; i <= kernelSize; i++) {
+    for (int j = -kernelSize; j <= kernelSize; j++) {
+      float4 value = valueAt(topLeft, top, topRight, right, botomRight, botom, botomLeft, left, center, oX + i, oY + j, width, height);
+      float4 con = kern[(j + kernelSize) + (i + kernelSize) * (kernelSize * 2 + 1)];
+      sum += value * con;
     }
-  }  
-
-  sum /= 15;
-
-  output[y + x * height] = sum;
   }
-  
+
+  const factor = (kernelSize * 2 + 1) * (kernelSize * 2 + 1);
+
+
+  sum.x /= kernelSum.x;
+  sum.y /= kernelSum.y;
+  sum.z /= kernelSum.z;
+
+  sum.x = pow(sum.x, 1.0f / 2.2f);
+  sum.y = pow(sum.y, 1.0f / 2.2f);
+  sum.z = pow(sum.z, 1.0f / 2.2f);
+  sum.w /= kernelSum.w;
+  sum = clamp(sum, 0.0f, 1.0f);
+
+  sum = fixExtremeSaturation(sum);
+
+  // sum.x *= sumAtCenter.x;
+  // sum.y *= sumAtCenter.y;
+  // sum.z *= sumAtCenter.z;
+
+  sum.w = 1.0f;
+
+  output[oY + oX * height] = sum + out;
+  }
