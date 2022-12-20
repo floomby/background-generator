@@ -88,10 +88,13 @@ __kernel void nebula(__global float4 *out, __global float4 *featureParams, __glo
     float3 color = featureColors[i].xyz;
     
     featureColor += color * strength * (falloff + 0.1f);
-    totalStrength += strength * falloff;
+
+    float strengthFalloff = max(1.0f - dist / (radius * 8.0f), 0.0f);
+
+    totalStrength += strength * strengthFalloff;
   }
 
-  float bias = log(totalStrength + 1.0f) * 0.5f;
+  float bias = log(totalStrength + 1.0f);
 
   featureColor = normalize(featureColor);
 
@@ -100,7 +103,7 @@ __kernel void nebula(__global float4 *out, __global float4 *featureParams, __glo
   nebulaColors[2] = (float4)(featureColor + colorDeltas[2], 1.0f);
   nebulaColors[3] = (float4)(featureColor + colorDeltas[3], 1.0f);
 
-  float4 first = applyWavelengths(longs, x, y, allWhite, 1.0f, (float4)(0.0f, 0.0f, 0.0f, 0.0f));
+  float4 first = applyWavelengths(longs, x, y, allWhite, 1.0f, (float4)(0.0f, 0.0f, 0.0f, 0.0f - bias));
   float4 second = applyWavelengths(shorts, x, y, nebulaColors, 0.4f, (float4)(1.0f, 1.0f, 1.3f, 0.1f + bias));
   float4 ret = clamp(second - first, (float4)(0.0f, 0.0f, 0.0f, 0.0f), (float4)(1.0f, 1.0f, 1.0f, 0.0f));
 

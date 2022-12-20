@@ -21,7 +21,6 @@ See the include example features.json file for an example of the feature definit
 
 Once it is generating the required features I will fix these problems.
 
-* The nebulas are too round from the features definitions.
 * The computation plan is quite naive and leads to lots of swapping buffers between system and gpu ram.
 * It uses lots of system memory (functionality to swap chunks out to a file on disk exist).
 * It uses more threads than optimal when it starts exporting the chunks to pngs.
