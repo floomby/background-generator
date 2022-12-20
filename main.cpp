@@ -18,12 +18,16 @@
 #include <tuple>
 #include <vector>
 #include <filesystem>
+#include <optional>
 
 #include <CL/cl.h>
 
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
 #include <boost/program_options.hpp>
 
 namespace po = boost::program_options;
+namespace pt = boost::property_tree;
 
 #include "libs/spng.h"
 
@@ -156,6 +160,11 @@ Image imageFromFloats(float *data, size_t width, size_t height) {
 
   image.pixels.resize(width * height);
   for (size_t i = 0; i < image.pixels.size(); i++) {
+    // clamp to 0..1
+    data[i * 4] = std::max(0.0f, std::min(1.0f, data[i * 4]));
+    data[i * 4 + 1] = std::max(0.0f, std::min(1.0f, data[i * 4 + 1]));
+    data[i * 4 + 2] = std::max(0.0f, std::min(1.0f, data[i * 4 + 2]));
+    data[i * 4 + 3] = std::max(0.0f, std::min(1.0f, data[i * 4 + 3]));
     image.pixels[i] = {
       .r = std::byte(data[i * 4] * 255.0f),
       .g = std::byte(data[i * 4 + 1] * 255.0f),
@@ -297,7 +306,9 @@ public:
       std::scoped_lock lock(self->mutex);
       Image image = imageFromFloats(self->data[0], self->dimension, self->dimension);
       ImageWriter::writePNG(filename, image);
-      std::cout << "Wrote " << filename << std::endl;
+      std::stringstream ss;
+      ss << "Wrote " << filename << std::endl;
+      std::cout << ss.str();
     });
     return t;
   }
@@ -809,6 +820,222 @@ y
 In memory it is y contiguous, i.e. (x_0, y_0), (x_0, y_1), (x_0, y_2)...
 */
 
+enum FeatureKind {
+  GlobularCluster = 0,
+  Nebula = 1,
+};
+
+struct Feature {
+  float x;
+  float y;
+  float radius;
+  float strength;
+  FeatureKind kind;
+  std::optional<std::array<float, 3>> color;
+};
+
+FeatureKind getFeatureKind(const std::string &kind) {
+  if (kind == "GlobularCluster") {
+    return GlobularCluster;
+  } else if (kind == "Nebula") {
+    return Nebula;
+  } else {
+    throw std::runtime_error("Unknown feature kind");
+  }
+}
+
+std::string getFeatureKindString(FeatureKind kind) {
+  switch (kind) {
+    case GlobularCluster:
+      return "GlobularCluster";
+    case Nebula:
+      return "Nebula";
+    default:
+      throw std::runtime_error("Unknown feature kind");
+  }
+}
+
+namespace std {
+ostream &operator<<(ostream &os, const Feature &f) {
+  os << "Feature { x: " << f.x << ", y: " << f.y << ", radius: " << f.radius << ", strength: " << f.strength << ", kind: " << getFeatureKindString(f.kind);
+  if (f.color) {
+    os << ", color: " << f.color.value()[0] << ", " << f.color.value()[1] << ", " << f.color.value()[2];
+  }
+  os << " }";
+  return os;
+}
+}
+
+// read in the features from the json feature file
+std::vector<Feature> readFeatures(const std::string &fileName) {
+  pt::ptree tree;
+  pt::read_json(fileName, tree);
+  // root of the json file is an array of features
+  std::vector<Feature> features;
+
+  for (auto &feature : tree) {
+    Feature f;
+    f.x = feature.second.get<float>("x");
+    f.y = feature.second.get<float>("y");
+    f.radius = feature.second.get<float>("radius");
+    f.strength = feature.second.get<float>("strength");
+    f.kind = getFeatureKind(feature.second.get<std::string>("kind"));
+    if (f.kind == Nebula) {
+      f.color = std::array<float, 3>{
+        feature.second.get<float>("color.r"),
+        feature.second.get<float>("color.g"),
+        feature.second.get<float>("color.b")
+      };
+    } else {
+      f.color = std::nullopt;
+      // Warn if color is specified for a globular cluster
+      if (feature.second.count("color")) {
+        std::cout << "Warning: color specified for globular cluster" << std::endl;
+      }
+    }
+    features.push_back(f);
+  }
+
+  return features;
+}
+
+cl_mem setupGlobularClusters(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const std::vector<Feature> &features) {
+  cl_int ret{CL_SUCCESS};
+
+  // Filter out globular clusters
+  std::vector<Feature> globularClusters;
+  for (auto &feature : features) {
+    if (feature.kind == GlobularCluster) {
+      globularClusters.push_back(feature);
+    }
+  }
+
+  // Create a buffer for the globular clusters
+  cl_mem globularClusterBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, globularClusters.size() * sizeof(Feature), NULL, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating globular cluster buffer: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error creating globular cluster buffer");
+  }
+
+  // Copy the globular clusters to the buffer
+  float *buf = new float[globularClusters.size() * sizeof(float) * 4];
+  for (size_t i = 0; i < globularClusters.size(); i++) {
+    buf[i * 4] = globularClusters[i].x;
+    buf[i * 4 + 1] = globularClusters[i].y;
+    buf[i * 4 + 2] = globularClusters[i].radius;
+    buf[i * 4 + 3] = globularClusters[i].strength;
+  }
+
+  ret = clEnqueueWriteBuffer(queue, globularClusterBuffer, CL_TRUE, 0, globularClusters.size() * sizeof(Feature), buf, 0, NULL, NULL);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error writing globular cluster buffer: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error writing globular cluster buffer");
+  }
+
+  delete[] buf;
+
+  // Set the globular cluster buffer as an argument to the kernel
+  ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), &globularClusterBuffer);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting globular cluster buffer as kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting globular cluster buffer as kernel argument");
+  }
+
+  int globularClusterCount = globularClusters.size();
+
+  ret = clSetKernelArg(kernel, 2, sizeof(int), &globularClusterCount);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting globular cluster count as kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting globular cluster count as kernel argument");
+  }
+
+  return globularClusterBuffer;
+}
+
+std::array<cl_mem, 2> setupNebulas(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const std::vector<Feature> &features) {
+  cl_int ret{CL_SUCCESS};
+
+  // Filter out nebulae
+  std::vector<Feature> nebulae;
+  for (auto &feature : features) {
+    if (feature.kind == Nebula) {
+      nebulae.push_back(feature);
+    }
+  }
+
+  // Create a buffer for the nebulae
+  cl_mem nebulaBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, nebulae.size() * sizeof(Feature), NULL, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating nebula buffer: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error creating nebula buffer");
+  }
+
+  // Copy the nebulae to the buffer
+  float *buf = new float[nebulae.size() * sizeof(float) * 4];
+  for (size_t i = 0; i < nebulae.size(); i++) {
+    buf[i * 4] = nebulae[i].x;
+    buf[i * 4 + 1] = nebulae[i].y;
+    buf[i * 4 + 2] = nebulae[i].radius;
+    buf[i * 4 + 3] = nebulae[i].strength;
+  }
+
+  ret = clEnqueueWriteBuffer(queue, nebulaBuffer, CL_TRUE, 0, nebulae.size() * sizeof(Feature), buf, 0, NULL, NULL);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error writing nebula buffer: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error writing nebula buffer");
+  }
+
+  delete[] buf;
+
+  // Set the nebula buffer as an argument to the kernel
+  ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), &nebulaBuffer);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting nebula buffer as kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting nebula buffer as kernel argument");
+  }
+
+  // Create a buffer for the nebulae colors
+  cl_mem nebulaColorBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, nebulae.size() * sizeof(cl_float4), NULL, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating nebula color buffer: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error creating nebula color buffer");
+  }
+
+  // Copy the nebulae colors to the buffer
+  float *colorBuf = new float[nebulae.size() * sizeof(float) * 4];
+  for (size_t i = 0; i < nebulae.size(); i++) {
+    colorBuf[i * 4] = nebulae[i].color->at(0);
+    colorBuf[i * 4 + 1] = nebulae[i].color->at(1);
+    colorBuf[i * 4 + 2] = nebulae[i].color->at(2);
+    colorBuf[i * 4 + 3] = 0.0f;
+  }
+
+  ret = clEnqueueWriteBuffer(queue, nebulaColorBuffer, CL_TRUE, 0, nebulae.size() * sizeof(cl_float4), colorBuf, 0, NULL, NULL);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error writing nebula color buffer: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error writing nebula color buffer");
+  }
+
+  delete[] colorBuf;
+
+  // Set the nebula color buffer as an argument to the kernel
+  ret = clSetKernelArg(kernel, 2, sizeof(cl_mem), &nebulaColorBuffer);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting nebula color buffer as kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting nebula color buffer as kernel argument");
+  }
+
+  int nebulaCount = nebulae.size();
+
+  ret = clSetKernelArg(kernel, 3, sizeof(int), &nebulaCount);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting nebula count as kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting nebula count as kernel argument");
+  }
+
+  return {nebulaBuffer, nebulaColorBuffer};
+}
+
 void ensureDirectoryExists(const std::string &dirName) {
   // Make the directory if it doesn't exist
   std::filesystem::path dir(dirName);
@@ -824,6 +1051,7 @@ int main(int argc, char const *argv[]) {
     ("chunkCount", po::value<int>()->default_value(2), "Number of chunks per side to generate (total chunks generated is chunkCount^2)")
     ("chunkDimension", po::value<int>()->default_value(2048), "Size of chunks to generate")
     ("outputDirectory", po::value<std::string>()->default_value("output"), "Directory to output the pngs")
+    ("featureFile", po::value<std::string>()->default_value("features.json"), "File containing the features to generate")
   ;
 
   po::variables_map vm;
@@ -841,6 +1069,14 @@ int main(int argc, char const *argv[]) {
 
   int chunkCount = vm["chunkCount"].as<int>();
   int chunkDimension = vm["chunkDimension"].as<int>();
+
+  auto features = readFeatures(vm["featureFile"].as<std::string>());
+
+  // Print the features
+  std::cout << "Using the following features:" << std::endl;
+  for (auto &feature : features) {
+    std::cout << feature << std::endl;
+  }
 
   std::ifstream t("gen.ocl");
   std::string source_str((std::istreambuf_iterator<char>(t)), std::istreambuf_iterator<char>());
@@ -933,7 +1169,9 @@ int main(int argc, char const *argv[]) {
   }
 
   std::cout << "Generating background stars" << std::endl;
+  cl_mem globBuf = setupGlobularClusters(context, command_queue, starBackgroundKernel, features);
   grid.doGenerationNoSwap(context, command_queue, starBackgroundKernel, outBuffer, 1);
+  clReleaseMemObject(globBuf);
 
   std::cout << "Mixing layers" << std::endl;
   for (auto &chunk : grid.chunks) {
@@ -993,8 +1231,12 @@ int main(int argc, char const *argv[]) {
 
   grid.convolutionCleanup();
 
+
+  auto nebulaBufs = setupNebulas(context, command_queue, nebulaKernel, features);
   std::cout << "Generating nebula" << std::endl;
   grid.doGenerationNoSwap(context, command_queue, nebulaKernel, outBuffer, 1);
+  clReleaseMemObject(nebulaBufs[0]);
+  clReleaseMemObject(nebulaBufs[1]);
 
   std::cout << "Mixing layers" << std::endl;
   for (auto &chunk : grid.chunks) {
