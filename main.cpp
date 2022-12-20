@@ -176,7 +176,8 @@ Image imageFromFloats(float *data, size_t width, size_t height) {
   return image;
 }
 
-Image imageFromGimpExport(const GimpExport &img) {
+template <size_t N>
+Image imageFromGimpExport(const GimpExport<N> &img) {
   Image image;
   image.width = img.width;
   image.height = img.height;
@@ -267,10 +268,11 @@ class GridOfChunks;
 
 class Chunk : public std::enable_shared_from_this<Chunk> {
   friend class GridOfChunks;
-  float *data[2] = { nullptr, nullptr };
+  float *data[3] = { nullptr, nullptr, nullptr };
   size_t dimension;
   size_t offset[2];
   std::mutex mutex;
+  std::string swapDir;
 
   std::shared_ptr<Chunk> topLeft;
   std::shared_ptr<Chunk> top;
@@ -282,9 +284,10 @@ class Chunk : public std::enable_shared_from_this<Chunk> {
   std::shared_ptr<Chunk> left;
 public:
   std::string swapFileName;
-  Chunk(size_t dimension, std::array<size_t, 2> offset) {
+  Chunk(size_t dimension, std::array<size_t, 2> offset, const std::string &swapDir) {
     assert(offset[0] % dimension == 0);
     assert(offset[1] % dimension == 0);
+    this->swapDir = swapDir;
     this->dimension = dimension;
     this->offset[0] = offset[0];
     this->offset[1] = offset[1];
@@ -297,6 +300,9 @@ public:
     }
     if (data[1] != nullptr) {
       delete[] data[1];
+    }
+    if (data[2] != nullptr) {
+      delete[] data[2];
     }
   }
   std::thread dumpPNG(const std::string &outDir) {
@@ -337,25 +343,31 @@ public:
     }
   }
 
-  void init() {
+  void init(bool clear = false) {
     if (data[0] != nullptr) {
       return;
     }
     data[0] = new float[dimension * dimension * 4];
     data[1] = new float[dimension * dimension * 4];
-    std::memset(data[0], 0, dimension * dimension * 4 * sizeof(float));
-    std::memset(data[1], 0, dimension * dimension * 4 * sizeof(float));
+    data[2] = new float[dimension * dimension * 4];
+    if (clear) {
+      std::memset(data[0], 0, dimension * dimension * 4 * sizeof(float));
+      std::memset(data[1], 0, dimension * dimension * 4 * sizeof(float));
+      std::memset(data[2], 0, dimension * dimension * 4 * sizeof(float));
+    }
     mutex.unlock();
   }
 
   void swapOutToDisk() {
     if (mutex.try_lock()) {
-      std::ofstream file(swapFileName, std::ios::binary);
+      std::ofstream file(swapDir + "/" + swapFileName, std::ios::binary);
       file.write((char *)data[0], dimension * dimension * 4 * sizeof(float));
       file.write((char *)data[1], dimension * dimension * 4 * sizeof(float));
+      file.write((char *)data[2], dimension * dimension * 4 * sizeof(float));
       file.close();
       delete[] data[0];
       delete[] data[1];
+      delete[] data[2];
     } else {
       std::cout << "Failed to lock mutex (aborting): " << swapFileName << std::endl;
     }
@@ -367,17 +379,19 @@ public:
     }
     data[0] = new float[dimension * dimension * 4];
     data[1] = new float[dimension * dimension * 4];
-    std::ifstream file(swapFileName, std::ios::binary);
+    data[2] = new float[dimension * dimension * 4];
+    std::ifstream file(swapDir + "/" + swapFileName, std::ios::binary);
     file.read((char *)data[0], dimension * dimension * 4 * sizeof(float));
     file.read((char *)data[1], dimension * dimension * 4 * sizeof(float));
+    file.read((char *)data[2], dimension * dimension * 4 * sizeof(float));
     file.close();
     mutex.unlock();
   }
 
   void clear(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, size_t layer = 0) {
-    assert(layer < 2);
+    assert(layer < 3);
 
-    if (data[0] == nullptr) {
+    if (data[layer] == nullptr) {
       throw std::runtime_error("Chunk never initialized: " + swapFileName);
     }
 
@@ -405,9 +419,9 @@ public:
   }
 
   void generate(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer, size_t layer = 0) {
-    assert(layer < 2);
+    assert(layer < 3);
 
-    if (data[0] == nullptr) {
+    if (data[layer] == nullptr) {
       throw std::runtime_error("Chunk never initialized: " + swapFileName);
     }
 
@@ -441,9 +455,9 @@ public:
   }
 
   void clear(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer, size_t layer) {
-    assert(layer < 2);
+    assert(layer < 3);
 
-    if (data[0] == nullptr) {
+    if (data[layer] == nullptr) {
       throw std::runtime_error("Chunk never initialized: " + swapFileName);
     }
 
@@ -480,7 +494,14 @@ public:
   }
 
   // Mixes layer 1 down into layer 0
-  void mixDown(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer) {
+  void mixDown(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer, size_t to = 0, size_t from = 1) {
+    assert(to < 3);
+    assert(from < 3);
+    if (from == to) {
+      std::cout << "Warning: Mixing down to same layer: " << swapFileName << std::endl;
+      return;
+    }
+
     if (data[0] == nullptr) {
       throw std::runtime_error("Chunk never initialized: " + swapFileName);
     }
@@ -508,13 +529,13 @@ public:
       throw std::runtime_error("Error creating buffer");
     }
 
-    ret = clEnqueueWriteBuffer(queue, layer0Buffer, CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), data[0], 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(queue, layer0Buffer, CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), data[to], 0, NULL, NULL);
     if (ret != CL_SUCCESS) {
       std::cout << "Error writing buffer: " << getErrorString(ret) << std::endl;
       throw std::runtime_error("Error writing buffer");
     }
 
-    ret = clEnqueueWriteBuffer(queue, layer1Buffer, CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), data[1], 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(queue, layer1Buffer, CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), data[from], 0, NULL, NULL);
     if (ret != CL_SUCCESS) {
       std::cout << "Error writing buffer: " << getErrorString(ret) << std::endl;
       throw std::runtime_error("Error writing buffer");
@@ -549,7 +570,7 @@ public:
       throw std::runtime_error("Error enqueuing kernel");
     }
 
-    ret = clEnqueueReadBuffer(queue, outBuffer, CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), data[0], 0, NULL, NULL);
+    ret = clEnqueueReadBuffer(queue, outBuffer, CL_TRUE, 0, dimension * dimension * 4 * sizeof(float), data[to], 0, NULL, NULL);
     if (ret != CL_SUCCESS) {
       std::cout << "Error reading buffer: " << getErrorString(ret) << std::endl;
       throw std::runtime_error("Error reading buffer");
@@ -562,7 +583,7 @@ public:
   }
 
   void convolve(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer, size_t layer = 0) {
-    assert(layer < 2);
+    assert(layer < 3);
 
     if (!mutex.try_lock()) {
       std::cout << "Failed to lock mutex (aborting): " << swapFileName << std::endl;
@@ -608,16 +629,16 @@ class GridOfChunks {
 public:
   std::vector<std::shared_ptr<Chunk>> chunks;
   size_t cellCount;
-  GridOfChunks(size_t cellCount, size_t dimension) {
+  GridOfChunks(size_t cellCount, size_t dimension, const std::string &swapDir) {
     this->cellCount = cellCount;
     this->dimension = dimension;
 
-    dead = std::make_shared<Chunk>(dimension, std::array<size_t, 2>({0, 0}));
+    dead = std::make_shared<Chunk>(dimension, std::array<size_t, 2>({0, 0}), swapDir);
     dead->init();
 
     for (size_t x = 0; x < cellCount; x++) {
       for (size_t y = 0; y < cellCount; y++) {
-        std::shared_ptr<Chunk> chunk = std::make_shared<Chunk>(dimension, std::array<size_t, 2>({x * dimension, y * dimension}));
+        std::shared_ptr<Chunk> chunk = std::make_shared<Chunk>(dimension, std::array<size_t, 2>({x * dimension, y * dimension}), swapDir);
         chunk->topLeft = dead;
         chunk->top = dead;
         chunk->topRight = dead;
@@ -741,7 +762,7 @@ public:
     const std::array<cl_mem, 9> &buffers,
     size_t layer = 0
   ) {
-    assert(layer < 2);
+    assert(layer < 3);
     cl_uint ret{CL_SUCCESS};
     const auto chunk = chunks[x + y * cellCount];
 
@@ -788,7 +809,7 @@ public:
       throw std::runtime_error("Error setting kernel arg");
     }
 
-    assert(layer < 2);
+    assert(layer < 3);
 
     for (auto &chunk : chunks) {
       chunk->generate(context, queue, kernel, outBuffer, layer);
@@ -1052,6 +1073,8 @@ int main(int argc, char const *argv[]) {
     ("chunkDimension", po::value<int>()->default_value(2048), "Size of chunks to generate")
     ("outputDirectory", po::value<std::string>()->default_value("output"), "Directory to output the pngs")
     ("featureFile", po::value<std::string>()->default_value("features.json"), "File containing the features to generate")
+    ("swapDirectory", po::value<std::string>()->default_value("swap"), "Directory to use for swap files")
+    ("maxBatchDimension", po::value<int>()->default_value(5), "Maximum dimension of a batch of chunks")
   ;
 
   po::variables_map vm;
@@ -1064,8 +1087,10 @@ int main(int argc, char const *argv[]) {
   }
 
   const auto outDir = vm["outputDirectory"].as<std::string>();
+  const auto swapDir = vm["swapDirectory"].as<std::string>();
 
   ensureDirectoryExists(outDir);
+  ensureDirectoryExists(swapDir);
 
   int chunkCount = vm["chunkCount"].as<int>();
   int chunkDimension = vm["chunkDimension"].as<int>();
@@ -1161,22 +1186,22 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error creating buffer");
   }
 
-  GridOfChunks grid(chunkCount, chunkDimension);
+  GridOfChunks grid(chunkCount, chunkDimension, swapDir);
 
   std::cout << "Clearing memory" << std::endl;
   for (auto &chunk : grid.chunks) {
     chunk->clear(context, command_queue, clearKernel, outBuffer, 0);
   }
 
-  std::cout << "Generating background stars" << std::endl;
-  cl_mem globBuf = setupGlobularClusters(context, command_queue, starBackgroundKernel, features);
-  grid.doGenerationNoSwap(context, command_queue, starBackgroundKernel, outBuffer, 1);
-  clReleaseMemObject(globBuf);
+  // std::cout << "Generating background stars" << std::endl;
+  // cl_mem globBuf = setupGlobularClusters(context, command_queue, starBackgroundKernel, features);
+  // grid.doGenerationNoSwap(context, command_queue, starBackgroundKernel, outBuffer, 1);
+  // clReleaseMemObject(globBuf);
 
-  std::cout << "Mixing layers" << std::endl;
-  for (auto &chunk : grid.chunks) {
-    chunk->mixDown(context, command_queue, mixKernel, outBuffer);
-  }
+  // std::cout << "Mixing layers" << std::endl;
+  // for (auto &chunk : grid.chunks) {
+  //   chunk->mixDown(context, command_queue, mixKernel, outBuffer);
+  // }
 
   // load the convolution program
   std::ifstream t2("convolve.ocl");
@@ -1203,7 +1228,7 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error building program");
   }
 
-  cl_kernel kernel2 = clCreateKernel(program2, "convolve", &ret);
+  cl_kernel convolverKernel = clCreateKernel(program2, "convolve", &ret);
   if (ret != CL_SUCCESS) {
     std::cout << "Error creating convolution kernel" << std::endl;
     throw std::runtime_error("Error creating kernel");
@@ -1215,22 +1240,21 @@ int main(int argc, char const *argv[]) {
   airyDisk.premultiplyAlpha();
   // const Image airyDisk = testConvKernel();
 
-  ret = clSetKernelArg(kernel2, 9, sizeof(cl_mem), &outBuffer);
+  ret = clSetKernelArg(convolverKernel, 9, sizeof(cl_mem), &outBuffer);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting kernel arg" << std::endl;
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  grid.bindConvolutionKernel(context, command_queue, kernel2, airyDisk, 0.6f);
+  grid.bindConvolutionKernel(context, command_queue, convolverKernel, airyDisk, 0.6f);
   for (size_t x = 0; x < grid.cellCount; x++) {
     for (size_t y = 0; y < grid.cellCount; y++) {
-      auto chunk = grid.bindForConvolution(context, command_queue, kernel2, x, y, buffers);
-      chunk->convolve(context, command_queue, kernel2, outBuffer);
+      auto chunk = grid.bindForConvolution(context, command_queue, convolverKernel, x, y, buffers);
+      chunk->convolve(context, command_queue, convolverKernel, outBuffer);
     } 
   }
 
   grid.convolutionCleanup();
-
 
   auto nebulaBufs = setupNebulas(context, command_queue, nebulaKernel, features);
   std::cout << "Generating nebula" << std::endl;
@@ -1246,17 +1270,20 @@ int main(int argc, char const *argv[]) {
   std::cout << "Generating foreground stars" << std::endl;
   grid.doGenerationNoSwap(context, command_queue, starForegroundKernel, outBuffer, 1);
 
-  ret = clSetKernelArg(kernel2, 9, sizeof(cl_mem), &outBuffer);
+  ret = clSetKernelArg(convolverKernel, 9, sizeof(cl_mem), &outBuffer);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting kernel arg" << std::endl;
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  grid.bindConvolutionKernel(context, command_queue, kernel2, airyDisk, 0.4f, 0.8f);
+  Image airyDisk2 = imageFromGimpExport(airyKernel2);
+  airyDisk2.premultiplyAlpha();
+
+  grid.bindConvolutionKernel(context, command_queue, convolverKernel, airyDisk2, 0.4f, 0.8f);
   for (size_t x = 0; x < grid.cellCount; x++) {
     for (size_t y = 0; y < grid.cellCount; y++) {
-      auto chunk = grid.bindForConvolution(context, command_queue, kernel2, x, y, buffers, 1);
-      chunk->convolve(context, command_queue, kernel2, outBuffer, 1);
+      auto chunk = grid.bindForConvolution(context, command_queue, convolverKernel, x, y, buffers, 1);
+      // chunk->convolve(context, command_queue, convolverKernel, outBuffer, 1);
     } 
   }
 
@@ -1282,7 +1309,7 @@ int main(int argc, char const *argv[]) {
   }
 
   // release the kernel
-  clReleaseKernel(kernel2);
+  clReleaseKernel(convolverKernel);
 
   // release the program
   clReleaseProgram(program2);
