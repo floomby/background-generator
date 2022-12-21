@@ -109,6 +109,10 @@ const char *getErrorString(cl_int error) {
   }
 }
 
+unsigned roundUpToMultipleOf(unsigned value, unsigned multiple) {
+  return (value + multiple - 1) / multiple * multiple;
+}
+
 struct Pixel {
   std::byte r;
   std::byte g;
@@ -265,15 +269,15 @@ public:
   Chunk(Chunk &&) = delete;
   Chunk &operator=(Chunk &&) = delete;
 
-  void generate(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer) {
+  void generate(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const cl_mem &outBuffer, size_t idOffset) {
 #ifdef VERBOSE_OPS
     std::cout << "Generating " << chunkName << std::endl;
 #endif
 
     cl_int ret{CL_SUCCESS};
 
-    size_t globalWorkSize[2] = {dimension, dimension};
-    size_t localWorkSize[2] = {16, 16};
+    size_t globalWorkSize[2] = {dimension + idOffset * 2, dimension + idOffset * 2};
+    size_t localWorkSize[2] = {dimension + idOffset * 2, dimension + idOffset * 2};
 
     ret = clEnqueueNDRangeKernel(queue, kernel, 2, this->offset, globalWorkSize, localWorkSize, 0, NULL, NULL);
     if (ret != CL_SUCCESS) {
@@ -288,18 +292,6 @@ public:
     }
   }
 };
-
-/*
-Coordinate system used by the open cl kernels is:
-
-0 -> x
-|
-v
-y
-
-In memory it is y contiguous, i.e. (x_0, y_0), (x_0, y_1), (x_0, y_2)...
-*/
-
 
 enum FeatureKind {
   GlobularCluster = 0,
@@ -676,7 +668,7 @@ int main(int argc, char const *argv[]) {
 
   ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), &outBuffer);
   if (ret != CL_SUCCESS) {
-    std::cout << "Error setting kernel arg" << std::endl;
+    std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error setting kernel arg");
   }
 
@@ -686,15 +678,51 @@ int main(int argc, char const *argv[]) {
   Image airyDisk = imageFromGimpExport(airyKernel);
   airyDisk.premultiplyAlpha();
 
+  Image airyDisk2 = imageFromGimpExport(airyKernel2);
+  airyDisk2.premultiplyAlpha();
+
   cl_mem backgroundBuf = bindConvolutionKernel(context, commandQueue, kernel, airyDisk, 6);
-  cl_mem foregroundBuf = bindConvolutionKernel(context, commandQueue, kernel, airyDisk, 9);
+  cl_mem foregroundBuf = bindConvolutionKernel(context, commandQueue, kernel, airyDisk2, 9);
+
+  unsigned maxKernelOffset = roundUpToMultipleOf(std::max(airyDisk.width, airyDisk2.height) >> 1, 16);
+  size_t scratchBufferSize = (chunkDimension + maxKernelOffset * 2) * (chunkDimension + maxKernelOffset * 2) * 4 * sizeof(float);
+
+  cl_mem scratchBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, scratchBufferSize, NULL, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating buffer" << std::endl;
+    throw std::runtime_error("Error creating buffer");
+  }
+
+  cl_mem scratchBuffer2 = clCreateBuffer(context, CL_MEM_READ_WRITE, scratchBufferSize, NULL, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating buffer" << std::endl;
+    throw std::runtime_error("Error creating buffer");
+  }
+
+  ret = clSetKernelArg(kernel, 12, sizeof(cl_mem), &scratchBuffer);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting kernel arg");
+  }
+
+  ret = clSetKernelArg(kernel, 13, sizeof(unsigned), &maxKernelOffset);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting kernel arg");
+  }
+
+  ret = clSetKernelArg(kernel, 14, sizeof(cl_mem), &scratchBuffer2);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting kernel arg");
+  }
 
   std::vector<std::thread> pngThreads;
 
   for (size_t x = 0; x < chunkCount; x++) {
     for (size_t y = 0; y < chunkCount; y++) {
       auto chunk = std::make_shared<Chunk>(chunkDimension, std::array<size_t, 2>({x * chunkDimension, y * chunkDimension}));
-      chunk->generate(context, commandQueue, kernel, outBuffer);
+      chunk->generate(context, commandQueue, kernel, outBuffer, maxKernelOffset);
       pngThreads.push_back(chunk->dumpPNG(outDir));
     }
   }

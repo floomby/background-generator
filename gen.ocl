@@ -59,15 +59,94 @@ __constant const float3 colorDeltas[4] = {
   (float3)(0.1f, -0.2f, 0.1f)
 };
 
-__kernel void nebula(__global float4 *out, __global float4 *featureParams, __global float4 *featureColors, int featureCount) {
-  int x = get_global_id(0);
-  int y = get_global_id(1);
+const float4 doStars(__constant const float wavelengths[5], int x, int y, __constant const float biases[5], const float scales[5]) {
+  float value = 0.0f;
+  for (int i = 0; i < 5; i++) {
+    float2 p = (float2)(x, y) / wavelengths[i];
+    float2 calc = noise(p);
+    calc.x = clamp(calc.x + biases[i], 0.0f, 1.0f) * scales[i];
+    value += calc.x;
+  }
+  value /= 5.0f;
+  value = smoothstep(0.52f, 0.73f, value);
+  return (float4)(value, value, value, value);
+}
 
-  int oX = x - get_global_offset(0);
-  int oY = y - get_global_offset(1);
+const __constant float starBackgroundWavelengths[5] = {2.0f, 3.0f, 5.0f, 15.0f, 100.0f};
+const __constant float starForegroundWavelengths[5] = {3.0f, 4.0f, 5.0f, 20.0f, 200.0f};
+const __constant float starBiases[5] = {0.0f, -0.1f, 0.0f, -0.4f, -0.4f};
+const __constant float starScales[5] = {1.0f, 2.0f, 1.0f, 0.5f, 0.5f};
 
-  int flatCoord = (oY * get_global_size(0) + oX);
+float4 mixPixels(const float4 a, const float4 b) {
+  return (float4)(mix(a.xyz, b.xyz, b.w), 1.0f);
+}
 
+float4 calcBackgroundStar(
+  const int x,
+  const int y,
+  __global float4 *backgroundStarFeatures,
+  int backgroundStarFeatureCount
+) {
+  float globularStrength = 0.0f;
+  for(int i = 0; i < backgroundStarFeatureCount; i++) {
+    float2 coords = (float2)(x, y);
+    float2 center = backgroundStarFeatures[i].xy;
+    float radius = backgroundStarFeatures[i].z;
+    float strength = backgroundStarFeatures[i].w;
+
+    float dist = length(coords - center);
+    if (dist > radius) continue;
+
+    float falloff = 1.0f - dist / radius;
+    globularStrength += strength * cbrt(falloff);
+  }
+
+  // create a copy of the star scaless
+  float starScalesCopy[5] = {starScales[0], starScales[1], starScales[2], starScales[3], starScales[4]};
+  starScalesCopy[0] += globularStrength / 3.0;
+  starScalesCopy[1] += globularStrength / 3.0;
+  starScalesCopy[4] += globularStrength / 4.0;
+
+  return doStars(starBackgroundWavelengths, x, y, starBiases, starScalesCopy);
+}
+
+// float4 calcBackgroundStarConvolved(
+//   const int x,
+//   const int y,
+//   __global float4 *backgroundStarFeatures,
+//   int backgroundStarFeatureCount,
+//   __global float4 *kern,
+//   int kernelSize,
+//   float4 kernelSum
+// ) {
+//   float4 sum = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+//   float4 out = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+
+//   for (int i = -kernelSize; i <= kernelSize; i++) {
+//     for (int j = -kernelSize; j <= kernelSize; j++) {
+//       float4 value = calcBackgroundStar(x + i, y + j, backgroundStarFeatures, backgroundStarFeatureCount);
+//       float4 con = kern[(j + kernelSize) + (i + kernelSize) * (kernelSize * 2 + 1)];
+//       sum += value * con;
+//       if (i == 0 && j == 0) {
+//         out = value;
+//       }
+//     }
+//   }
+
+//   sum /= kernelSum;
+
+//   // sum = pow(sum, 0.6f);
+
+//   return sum;
+// }
+
+float4 calcNebula(
+  const int x,
+  const int y,
+  __global float4 *featureParams,
+  __global float4 *featureColors,
+  int featureCount
+) {
   const float4 allWhite[4] = {(float4)(0.8f, 0.8f, 1.0f, 1.0), (float4)(0.9f, 0.8f, 1.0f, 1.0), (float4)(1.0f, 0.9f, 0.8f, 1.0), (float4)(1.0f, 1.0f, 1.0f, 1.0)};
   float4 nebulaColors[4];
 
@@ -105,104 +184,73 @@ __kernel void nebula(__global float4 *out, __global float4 *featureParams, __glo
 
   float4 first = applyWavelengths(longs, x, y, allWhite, 1.0f, (float4)(0.0f, 0.0f, 0.0f, 0.0f - bias));
   float4 second = applyWavelengths(shorts, x, y, nebulaColors, 0.4f, (float4)(1.0f, 1.0f, 1.3f, 0.1f + bias));
-  float4 ret = clamp(second - first, (float4)(0.0f, 0.0f, 0.0f, 0.0f), (float4)(1.0f, 1.0f, 1.0f, 0.0f));
+  // float4 ret = clamp(second - first, (float4)(0.0f, 0.0f, 0.0f, 0.0f), (float4)(1.0f, 1.0f, 1.0f, 0.0f));
+  float4 ret = second - first;
 
-  float alpha = length(ret.xyz) * 0.5f;
+  float alpha = clamp(length(clamp(ret.xyz, 0.0f, 1.0f)) * 0.5f, 0.0f, 1.0f);
 
-  out[flatCoord] = (float4)(ret.xyz, alpha);
+  return (float4)(ret.xyz, alpha);
 }
 
-const float4 doStars(__constant const float wavelengths[5], int x, int y, __constant const float biases[5], const float scales[5]) {
-  float value = 0.0f;
-  for (int i = 0; i < 5; i++) {
-    float2 p = (float2)(x, y) / wavelengths[i];
-    float2 calc = noise(p);
-    calc.x = clamp(calc.x + biases[i], 0.0f, 1.0f) * scales[i];
-    value += calc.x;
-  }
-  value /= 5.0f;
-  value = smoothstep(0.5f, 0.63f, value);
-  return (float4)(value, value, value, value);
-}
-
-const __constant float starBackgroundWavelengths[5] = {2.0f, 3.0f, 5.0f, 15.0f, 100.0f};
-const __constant float starForegroundWavelengths[5] = {3.0f, 4.0f, 5.0f, 20.0f, 200.0f};
-const __constant float starBiases[5] = {0.0f, -0.1f, 0.0f, -0.4f, -0.4f};
-const __constant float starScales[5] = {1.0f, 2.0f, 1.0f, 0.5f, 0.5f};
-
-__kernel void starBackground(__global float4 *out, __global float4 *featureParams, int featureCount) {
-  // feature param is x, y, radius, strength, 
-  int x = get_global_id(0);
-  int y = get_global_id(1);
-
-  int oX = x - get_global_offset(0);
-  int oY = y - get_global_offset(1);
-
-  float globularStrength = 0.0f;
-  for(int i = 0; i < featureCount; i++) {
-    float2 coords = (float2)(x, y);
-    float2 center = featureParams[i].xy;
-    float radius = featureParams[i].z;
-    float strength = featureParams[i].w;
-
-    float dist = length(coords - center);
-    if (dist > radius) continue;
-
-    float falloff = 1.0f - dist / radius;
-    globularStrength += strength * cbrt(falloff);
-  }
-
-  // create a copy of the star scaless
-  float starScalesCopy[5] = {starScales[0], starScales[1], starScales[2], starScales[3], starScales[4]};
-  starScalesCopy[0] += globularStrength / 3.0;
-  starScalesCopy[1] += globularStrength / 3.0;
-  starScalesCopy[4] += globularStrength / 4.0;
-
-  int flatCoord = (oY * get_global_size(0) + oX);
-
-  out[flatCoord] = doStars(starBackgroundWavelengths, x, y, starBiases, starScalesCopy);
-}
-
-__kernel void mixLayers(__global float4 *layer0, __global float4 *layer1, __global float4 *out) {
-  int x = get_global_id(0);
-  int y = get_global_id(1);
-
-  int flatCoord = (y * get_global_size(0) + x);
-
-  float3 color = mix(layer0[flatCoord].xyz, layer1[flatCoord].xyz, layer1[flatCoord].w);
-
-  out[flatCoord] = (float4)(color, 1.0f);
-}
-
-__kernel void clear(__global float4 *out) {
-  int x = get_global_id(0);
-  int y = get_global_id(1);
-
-  int flatCoord = (y * get_global_size(0) + x);
-
-  out[flatCoord] = (float4)(0.0f, 0.0f, 0.0f, 1.0f);
-}
-
-__kernel void starForeground(__global float4 *out) {
-  int x = get_global_id(0);
-  int y = get_global_id(1);
-
-  int oX = x - get_global_offset(0);
-  int oY = y - get_global_offset(1);
-
-  int flatCoord = (oY * get_global_size(0) + oX);
-
+float4 calcForegroundStar(
+  const int x,
+  const int y
+) {
   float starScalesCopy[5] = {starScales[0], starScales[1], starScales[2], starScales[3], starScales[4]};
 
-  // starScalesCopy[0] += 3.0f;
-  // starScalesCopy[1] += 3.0f;
-  // starScalesCopy[2] += 3.0f;
-  // starScalesCopy[3] += 3.0f;
-  // starScalesCopy[4] += 3.0f;
-
-  out[flatCoord] = doStars(starForegroundWavelengths, x, y, starBiases, starScalesCopy);
+  return doStars(starForegroundWavelengths, x, y, starBiases, starScalesCopy);
+  // return (float4)(0.0f, 0.0f, 0.0f, 1.0f);
 }
 
+// float4 calcForegroundStarConvolved(
+//   const int x,
+//   const int y,
+//   __global float4 *kern,
+//   int kernelSize,
+//   float4 kernelSum
+// ) {
+//   float4 sum = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+
+//   for (int i = -kernelSize; i <= kernelSize; i++) {
+//     for (int j = -kernelSize; j <= kernelSize; j++) {
+//       float4 value = calcForegroundStar(x + i, y + j);
+//       float4 con = kern[(j + kernelSize) + (i + kernelSize) * (kernelSize * 2 + 1)];
+//       sum += value * con;
+//     }
+//   }
+
+//   sum /= kernelSum;
+
+//   // sum = pow(sum, 0.6f);
+
+//   return sum;
+// }
+
+float4 convolve(
+  const int sX,
+  const int sY,
+  __global float4 *kern,
+  int kernelSize,
+  float4 kernelSum,
+  __global float4 *scratch,
+  const unsigned scratchDimension
+) {
+  float4 sum = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+
+  for (int i = -kernelSize; i <= kernelSize; i++) {
+    for (int j = -kernelSize; j <= kernelSize; j++) {
+      float4 value = scratch[(sY + j) * scratchDimension + (sX + i)].xxxx;
+      float4 con = kern[(j + kernelSize) * (kernelSize * 2 + 1) + (i + kernelSize)];
+      sum += value * con;
+    }
+  }
+
+  sum /= kernelSum.xxxw;
+
+  sum = pow(sum, 0.1f);
+
+  return sum;
+}
 
 __kernel void monoGen(
   __global float4 *out,
@@ -213,20 +261,92 @@ __kernel void monoGen(
   int nebulaFeatureCount,
   __global float4 *backgroundConvolutionKernel,
   int backgroundConvolutionKernelSize,
-  float4 backgroundConvolutionKernelScale,
+  float4 backgroundConvolutionKernelSum,
   __global float4 *foregroundConvolutionKernel,
   int foregroundConvolutionKernelSize,
-  float4 foregroundConvolutionKernelScale
+  float4 foregroundConvolutionKernelSum,
+  __global float4 *scratch,
+  const unsigned scratchOffset,
+  __global float4 *scratch2
 ) {
-  int x = get_global_id(0);
-  int y = get_global_id(1);
+  int x = get_global_id(0) - scratchOffset;
+  int y = get_global_id(1) - scratchOffset;
 
-  int oX = x - get_global_offset(0);
-  int oY = y - get_global_offset(1);
+  bool keep = true;
 
-  int flatCoord = (oY * get_global_size(0) + oX);
+  int sX = get_global_id(0) - get_global_offset(0);
+  int sY = get_global_id(1) - get_global_offset(1);
 
-  float starScalesCopy[5] = {starScales[0], starScales[1], starScales[2], starScales[3], starScales[4]};
+  int dimension = get_global_size(0) - scratchOffset * 2;
 
-  out[flatCoord] = doStars(starForegroundWavelengths, x, y, starBiases, starScalesCopy);
+  int fX = sX - scratchOffset;
+  int fY = sY - scratchOffset;
+
+  int scratchCoord = sY * get_global_size(0) + sX;
+  int flatCoord = (fY * dimension) + fX;
+
+  if (fX < 0 || fY < 0 || fX >= dimension || fY >= dimension) {
+    keep = false;
+  }
+
+  // Clear the pixel
+  float4 pixel = (float4)(0.0f, 0.0f, 0.0f, 1.0f);
+
+  scratch[scratchCoord] = calcBackgroundStar(
+    x,
+    y,
+    backgroundStarFeatures,
+    backgroundStarFeatureCount
+  );
+
+  scratch2[scratchCoord] = calcForegroundStar(
+    x,
+    y
+  );
+
+  work_group_barrier(CLK_GLOBAL_MEM_FENCE);
+
+  if (keep) {
+    pixel = mixPixels(
+      pixel,
+      convolve(
+        sX,
+        sY,
+        foregroundConvolutionKernel,
+        foregroundConvolutionKernelSize,
+        foregroundConvolutionKernelSum,
+        scratch,
+        get_global_size(0)
+      )
+    );
+  }
+
+  // Calculate the nebula
+  pixel = mixPixels(
+    pixel,
+    calcNebula(
+      x,
+      y,
+      nebulaFeatureParams,
+      nebulaFeatureColors,
+      nebulaFeatureCount
+    )
+  );
+ 
+  // if (keep) {
+  //   float4 value = convolve(
+  //     sX,
+  //     sY,
+  //     backgroundConvolutionKernel,
+  //     backgroundConvolutionKernelSize,
+  //     backgroundConvolutionKernelSum,
+  //     scratch2,
+  //     get_global_size(0)
+  //   );
+  //   pixel = mixPixels(pixel, value);
+  // }
+
+  if (keep) {
+    out[flatCoord] = pixel;
+  }
 }
