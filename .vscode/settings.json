@@ -87,5 +87,8 @@
     "filesystem": "cpp",
     "ios": "cpp",
     "locale": "cpp"
-  }
+  },
+  "cSpell.words": [
+    "stargen"
+  ]
 }
