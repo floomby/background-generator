@@ -482,7 +482,7 @@ std::array<cl_mem, 2> setupNebulas(const cl_context &context, const cl_command_q
   delete[] buf;
 
   // Set the nebula buffer as an argument to the kernel
-  ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), &nebulaBuffer);
+  ret = clSetKernelArg(kernel, 2, sizeof(cl_mem), &nebulaBuffer);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting nebula buffer as kernel argument: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error setting nebula buffer as kernel argument");
@@ -513,7 +513,7 @@ std::array<cl_mem, 2> setupNebulas(const cl_context &context, const cl_command_q
   delete[] colorBuf;
 
   // Set the nebula color buffer as an argument to the kernel
-  ret = clSetKernelArg(kernel, 2, sizeof(cl_mem), &nebulaColorBuffer);
+  ret = clSetKernelArg(kernel, 3, sizeof(cl_mem), &nebulaColorBuffer);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting nebula color buffer as kernel argument: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error setting nebula color buffer as kernel argument");
@@ -521,7 +521,7 @@ std::array<cl_mem, 2> setupNebulas(const cl_context &context, const cl_command_q
 
   int nebulaCount = nebulae.size();
 
-  ret = clSetKernelArg(kernel, 3, sizeof(int), &nebulaCount);
+  ret = clSetKernelArg(kernel, 4, sizeof(int), &nebulaCount);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting nebula count as kernel argument: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error setting nebula count as kernel argument");
@@ -692,7 +692,7 @@ int main(int argc, char const *argv[]) {
   }
 
   auto starBuf = setupGlobularClusters(context, commandQueue, stargenKernel, features);
-  auto nebulaBuf = setupNebulas(context, commandQueue, finalizeKernel, features);
+  auto nebulaBuf = setupNebulas(context, commandQueue, stargenKernel, features);
 
   Image airyDisk = imageFromGimpExport(airyKernel);
   airyDisk.premultiplyAlpha();
@@ -700,8 +700,9 @@ int main(int argc, char const *argv[]) {
   Image airyDisk2 = imageFromGimpExport(airyKernel2);
   airyDisk2.premultiplyAlpha();
 
-  cl_mem backgroundBuf = bindConvolutionKernel(context, commandQueue, finalizeKernel, airyDisk, 4);
-  cl_mem foregroundBuf = bindConvolutionKernel(context, commandQueue, finalizeKernel, airyDisk2, 7);
+  cl_mem backgroundBuf = bindConvolutionKernel(context, commandQueue, finalizeKernel, airyDisk, 1);
+  cl_mem foregroundBuf = bindConvolutionKernel(context, commandQueue, finalizeKernel, airyDisk2, 4);
+  cl_mem nebulaConBuf = bindConvolutionKernel(context, commandQueue, finalizeKernel, airyDisk, 7);
 
   unsigned maxKernelOffset = roundUpToMultipleOf(std::max(airyDisk.width, airyDisk2.height) >> 1, 16);
   size_t scratchBufferSize = (chunkDimension + maxKernelOffset * 2) * (chunkDimension + maxKernelOffset * 2) * 4 * sizeof(float);
@@ -713,6 +714,12 @@ int main(int argc, char const *argv[]) {
   }
 
   cl_mem scratchBuffer2 = clCreateBuffer(context, CL_MEM_READ_WRITE, scratchBufferSize, NULL, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error creating buffer" << std::endl;
+    throw std::runtime_error("Error creating buffer");
+  }
+
+  cl_mem scratchBuffer3 = clCreateBuffer(context, CL_MEM_READ_WRITE, scratchBufferSize, NULL, &ret);
   if (ret != CL_SUCCESS) {
     std::cout << "Error creating buffer" << std::endl;
     throw std::runtime_error("Error creating buffer");
@@ -736,19 +743,31 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error setting kernel arg");
   }
 
-ret = clSetKernelArg(stargenKernel, 2, sizeof(cl_mem), &scratchBuffer);
+  ret = clSetKernelArg(finalizeKernel, 13, sizeof(cl_mem), &scratchBuffer3);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  ret = clSetKernelArg(stargenKernel, 3, sizeof(unsigned), &maxKernelOffset);
+  ret = clSetKernelArg(stargenKernel, 5, sizeof(cl_mem), &scratchBuffer);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  ret = clSetKernelArg(stargenKernel, 4, sizeof(cl_mem), &scratchBuffer2);
+  ret = clSetKernelArg(stargenKernel, 6, sizeof(unsigned), &maxKernelOffset);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting kernel arg");
+  }
+
+  ret = clSetKernelArg(stargenKernel, 7, sizeof(cl_mem), &scratchBuffer2);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting kernel arg");
+  }
+
+  ret = clSetKernelArg(stargenKernel, 8, sizeof(cl_mem), &scratchBuffer3);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error setting kernel arg");
@@ -766,10 +785,15 @@ ret = clSetKernelArg(stargenKernel, 2, sizeof(cl_mem), &scratchBuffer);
 
   clReleaseMemObject(backgroundBuf);
   clReleaseMemObject(foregroundBuf);
+  clReleaseMemObject(nebulaConBuf);
 
   clReleaseMemObject(starBuf);
   clReleaseMemObject(nebulaBuf[0]);
   clReleaseMemObject(nebulaBuf[1]);
+
+  clReleaseMemObject(scratchBuffer);
+  clReleaseMemObject(scratchBuffer2);
+  clReleaseMemObject(scratchBuffer3);
 
   clReleaseKernel(stargenKernel);
   clReleaseKernel(finalizeKernel);

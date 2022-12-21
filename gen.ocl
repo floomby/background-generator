@@ -11,12 +11,12 @@ float2 lerp(float2 a, float2 b, float t) {
 
 const int2 offsets[4] = {(int2)(0, 0), (int2)(1, 0), (int2)(0, 1), (int2)(1, 1)};
 
-float2 noise(float2 coords) {
+float2 noise(float2 coords, int seed) {
   int2 i = (int2)(floor(coords.x), floor(coords.y));
 
   float2 gradients[4];
   for (int j = 0; j < 4; j++) {
-    gradients[j] = hash(i.x + offsets[j].x, i.y + offsets[j].y, 0);
+    gradients[j] = hash(i.x + offsets[j].x, i.y + offsets[j].y, seed);
   }
 
   float2 dists[4];
@@ -42,10 +42,10 @@ float2 noise(float2 coords) {
 const __constant float longs[4] = {439.0f, 1710.0f, 5474.0f, 2403.0f};
 const __constant float shorts[4] = {30.0f, 6.0f, 60.0f, 3.0f};
 
-const float4 applyWavelengths(__constant const float wavelengths[4], int x, int y, const float4 colors[4], const float scale, float4 bias) {
+const float4 applyWavelengths(__constant const float wavelengths[4], int x, int y, const float4 colors[4], const float scale, float4 bias, int seed) {
   for (int i = 0; i < 4; i++) {
     float2 p = (float2)(x, y) / wavelengths[i];
-    float2 calc = noise(p);
+    float2 calc = noise(p, seed);
     bias += colors[i] * calc.x * scale;
   }
   bias.w = 1.0f;
@@ -59,17 +59,21 @@ __constant const float3 colorDeltas[4] = {
   (float3)(0.1f, -0.2f, 0.1f)
 };
 
-const float4 doStars(__constant const float wavelengths[5], int x, int y, __constant const float biases[5], const float scales[5]) {
+const float4 doStars(__constant const float wavelengths[5], int x, int y, __constant const float biases[5], const float scales[5], int seed) {
   float value = 0.0f;
+  float colorInterp = 0.0f;
   for (int i = 0; i < 5; i++) {
     float2 p = (float2)(x, y) / wavelengths[i];
-    float2 calc = noise(p);
+    float2 calc = noise(p, seed);
     calc.x = clamp(calc.x + biases[i], 0.0f, 1.0f) * scales[i];
     value += calc.x;
+    colorInterp += calc.y * calc.x;
   }
   value /= 5.0f;
+  colorInterp /= 5.0f;
   value = smoothstep(0.52f, 0.73f, value);
-  return (float4)(value, value, value, value);
+  float3 color = mix((float3)(1.2f, 0.9f, 0.9f), (float3)(1.0f, 1.0f, 1.5f), colorInterp);
+  return (float4)(color * value, value);
 }
 
 const __constant float starBackgroundWavelengths[5] = {2.0f, 3.0f, 5.0f, 15.0f, 100.0f};
@@ -107,7 +111,7 @@ float4 calcBackgroundStar(
   starScalesCopy[1] += globularStrength / 3.0;
   starScalesCopy[4] += globularStrength / 4.0;
 
-  return doStars(starBackgroundWavelengths, x, y, starBiases, starScalesCopy);
+  return doStars(starBackgroundWavelengths, x, y, starBiases, starScalesCopy, 525892);
 }
 
 float4 calcNebula(
@@ -115,12 +119,13 @@ float4 calcNebula(
   const int y,
   __global float4 *featureParams,
   __global float4 *featureColors,
-  int featureCount
+  int featureCount,
+  int seed
 ) {
   const float4 allWhite[4] = {(float4)(0.8f, 0.8f, 1.0f, 1.0), (float4)(0.9f, 0.8f, 1.0f, 1.0), (float4)(1.0f, 0.9f, 0.8f, 1.0), (float4)(1.0f, 1.0f, 1.0f, 1.0)};
   float4 nebulaColors[4];
 
-  float3 featureColor = (float3)(0.0f, 0.0f, 0.0f);
+  float3 featureColor = (float3)(0.1f, 0.1f, 0.1f);
 
   float totalStrength = 0.0f;
 
@@ -132,7 +137,7 @@ float4 calcNebula(
 
     float dist = length(coords - center);
 
-    float falloff = max(1.0f - dist / radius, 0.0f);
+    float falloff = max(1.0f - dist / (radius * 5.0f), 0.0f);
 
     float3 color = featureColors[i].xyz;
     
@@ -152,8 +157,8 @@ float4 calcNebula(
   nebulaColors[2] = (float4)(featureColor + colorDeltas[2], 1.0f);
   nebulaColors[3] = (float4)(featureColor + colorDeltas[3], 1.0f);
 
-  float4 first = applyWavelengths(longs, x, y, allWhite, 1.0f, (float4)(-0.1f, -0.1f, -0.1f, -0.2f - bias));
-  float4 second = applyWavelengths(shorts, x, y, nebulaColors, 0.4f, (float4)(1.0f, 1.0f, 1.3f, 0.1f + bias));
+  float4 first = applyWavelengths(longs, x, y, allWhite, 1.0f, (float4)(-0.1f, -0.1f, -0.1f, 0.4f), seed);
+  float4 second = applyWavelengths(shorts, x, y, nebulaColors, 0.4f, (float4)(1.0f, 1.0f, 1.3f, 0.1f), seed);
   float4 ret = second - first;
 
   float alpha = clamp(length(clamp(ret.xyz, 0.0f, 1.0f)) * 0.5f, 0.0f, 1.0f);
@@ -167,7 +172,7 @@ float4 calcForegroundStar(
 ) {
   float starScalesCopy[5] = {starScales[0], starScales[1], starScales[2], starScales[3], starScales[4]};
 
-  return doStars(starForegroundWavelengths, x, y, starBiases, starScalesCopy);
+  return doStars(starForegroundWavelengths, x, y, starBiases, starScalesCopy, 9268);
 }
 
 float4 convolve(
@@ -197,9 +202,13 @@ float4 convolve(
 __kernel void stargen(
   __global float4 *backgroundStarFeatures,
   int backgroundStarFeatureCount,
+__global float4 *nebulaFeatureParams,
+  __global float4 *nebulaFeatureColors,
+  int nebulaFeatureCount,
   __global float4 *scratch,
   const unsigned scratchOffset,
-  __global float4 *scratch2
+  __global float4 *scratch2,
+  __global float4 *scratch3
 ) {
   int x = get_global_id(0) - scratchOffset;
   int y = get_global_id(1) - scratchOffset;
@@ -221,22 +230,32 @@ __kernel void stargen(
     x,
     y
   );
+
+  scratch3[scratchCoord] = calcNebula(
+    x,
+    y,
+    nebulaFeatureParams,
+    nebulaFeatureColors,
+    nebulaFeatureCount,
+    98681
+  );
 }
 
 __kernel void finalize(
   __global float4 *out,
-  __global float4 *nebulaFeatureParams,
-  __global float4 *nebulaFeatureColors,
-  int nebulaFeatureCount,
   __global float4 *backgroundConvolutionKernel,
   int backgroundConvolutionKernelSize,
   float4 backgroundConvolutionKernelSum,
   __global float4 *foregroundConvolutionKernel,
   int foregroundConvolutionKernelSize,
   float4 foregroundConvolutionKernelSum,
+  __global float4 *nebulaConvolutionKernel,
+  int nebulaConvolutionKernelSize,
+  float4 nebulaConvolutionKernelSum,
   __global float4 *scratch,
   const unsigned scratchOffset,
-  __global float4 *scratch2
+  __global float4 *scratch2,
+  __global float4 *scratch3
 ) {
   int x = get_global_id(0) - scratchOffset;
   int y = get_global_id(1) - scratchOffset;
@@ -276,15 +295,20 @@ __kernel void finalize(
     );
   }
 
-  
-  float4 value = calcNebula(
-    x,
-    y,
-    nebulaFeatureParams,
-    nebulaFeatureColors,
-    nebulaFeatureCount
-  );
-  pixel.xyz += value.xyz * value.w;
+  float4 value;
+  if (keep) {
+    value = convolve(
+      sX,
+      sY,
+      nebulaConvolutionKernel,
+      nebulaConvolutionKernelSize,
+      nebulaConvolutionKernelSum,
+      scratch3,
+      get_global_size(0)
+    );
+    pixel.xyz += value.xyz * value.w * 0.0015f;
+    pixel.xyz += scratch3[scratchCoord].xyz * scratch3[scratchCoord].w * 0.4f;
+  }
  
   if (keep) {
     value = convolve(
