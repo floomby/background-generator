@@ -7,11 +7,60 @@
     "strength": 0.5
   },
   {
+    "kind": "GlobularCluster",
+    "x": 1500,
+    "y": 3500,
+    "radius": 300,
+    "strength": 0.6
+  },{
+    "kind": "GlobularCluster",
+    "x": 23450,
+    "y": 2800,
+    "radius": 140,
+    "strength": 0.6
+  },{
+    "kind": "GlobularCluster",
+    "x": 3100,
+    "y": 4000,
+    "radius": 230,
+    "strength": 0.6
+  },{
+    "kind": "GlobularCluster",
+    "x": 2400,
+    "y": 1700,
+    "radius": 500,
+    "strength": 0.3
+  },{
+    "kind": "GlobularCluster",
+    "x": 700,
+    "y": 1250,
+    "radius": 130,
+    "strength": 0.5
+  },{
+    "kind": "GlobularCluster",
+    "x": 3800,
+    "y": 100,
+    "radius": 410,
+    "strength": 0.3
+  },{
+    "kind": "GlobularCluster",
+    "x": 2200,
+    "y": 3150,
+    "radius": 130,
+    "strength": 0.4
+  },{
+    "kind": "GlobularCluster",
+    "x": 400,
+    "y": 2370,
+    "radius": 200,
+    "strength": 0.6
+  },
+  {
     "kind": "Nebula",
     "x": 1000,
     "y": 1000,
-    "radius": 500,
-    "strength": 0.2,
+    "radius": 2500,
+    "strength": 1.0,
     "color": {
       "r": 0.0,
       "g": 0.0,
@@ -22,11 +71,71 @@
     "kind": "Nebula",
     "x": 3200,
     "y": 3000,
-    "radius": 500,
+    "radius": 2500,
     "strength": 1.0,
     "color": {
       "r": 0.0,
       "g": 1.0,
+      "b": 0.0
+    }
+  },
+  {
+    "kind": "Nebula",
+    "x": 15200,
+    "y": 26000,
+    "radius": 2500,
+    "strength": 1.0,
+    "color": {
+      "r": 1.0,
+      "g": 0.0,
+      "b": 1.0
+    }
+  },
+  {
+    "kind": "Nebula",
+    "x": 4200,
+    "y": 34000,
+    "radius": 2500,
+    "strength": 1.0,
+    "color": {
+      "r": 0.0,
+      "g": 1.0,
+      "b": 1.0
+    }
+  },
+  {
+    "kind": "Nebula",
+    "x": 8200,
+    "y": 23000,
+    "radius": 2500,
+    "strength": 2.0,
+    "color": {
+      "r": 1.0,
+      "g": 1.0,
+      "b": 0.0
+    }
+  },
+  {
+    "kind": "Nebula",
+    "x": 13200,
+    "y": 13000,
+    "radius": 2500,
+    "strength": 2.0,
+    "color": {
+      "r": 1.0,
+      "g": 1.0,
+      "b": 0.0
+    }
+  },
+  {
+    "kind": "Nebula",
+    "x": 200,
+    "y": 37000,
+    "radius": 2500,
+    "strength": 3.0,
+    "color": {
+      "r": 1.0,
+      "g": 0.0,
       "b": 0.0
     }
   }

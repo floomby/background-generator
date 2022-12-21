@@ -590,10 +590,11 @@ int main(int argc, char const *argv[]) {
   po::options_description desc("Allowed options");
   desc.add_options()
     ("help", "Print help message")
-    ("chunkCount", po::value<unsigned>()->default_value(2), "Number of chunks per side to generate (total chunks generated is chunkCount^2)")
+    ("chunkCount", po::value<unsigned>()->default_value(16), "Number of chunks per side to generate (total chunks generated is chunkCount^2)")
     ("chunkDimension", po::value<unsigned>()->default_value(2048), "Size of chunks to generate")
     ("outputDirectory", po::value<std::string>()->default_value("output"), "Directory to output the pngs")
     ("featureFile", po::value<std::string>()->default_value("features.json"), "File containing the features to generate")
+    ("seed", po::value<int>()->default_value(5782), "Seed for the random number generator")
   ;
 
   po::variables_map vm;
@@ -611,6 +612,7 @@ int main(int argc, char const *argv[]) {
 
   unsigned chunkCount = vm["chunkCount"].as<unsigned>();
   unsigned chunkDimension = vm["chunkDimension"].as<unsigned>();
+  const int seed = vm["seed"].as<int>();
 
   auto features = readFeatures(vm["featureFile"].as<std::string>());
 
@@ -768,6 +770,12 @@ int main(int argc, char const *argv[]) {
   }
 
   ret = clSetKernelArg(stargenKernel, 8, sizeof(cl_mem), &scratchBuffer3);
+  if (ret != CL_SUCCESS) {
+    std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
+    throw std::runtime_error("Error setting kernel arg");
+  }
+
+  ret = clSetKernelArg(stargenKernel, 9, sizeof(int), &seed);
   if (ret != CL_SUCCESS) {
     std::cout << "Error setting kernel argument: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error setting kernel arg");
