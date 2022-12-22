@@ -410,8 +410,8 @@ cl_mem setupGlobularClusters(
   std::vector<Feature> globularClusters;
   for (auto &feature : features) {
     if (feature.kind == GlobularCluster) {
-      if (feature.x + feature.radius < realX || feature.x - feature.radius > realX + dimension ||
-          feature.y + feature.radius < realY || feature.y - feature.radius > realY + dimension
+      if (feature.x + 3 * feature.radius < realX || feature.x - 3 * feature.radius > realX + dimension ||
+          feature.y + 3 * feature.radius < realY || feature.y - 3 * feature.radius > realY + dimension
       ) {
         continue;
       }
@@ -477,13 +477,25 @@ cl_mem setupGlobularClusters(
   return globularClusterBuffer;
 }
 
-std::array<cl_mem, 2> setupNebulas(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const std::vector<Feature> &features) {
+#define sqr(x) (static_cast<float>(x) * static_cast<float>(x))
+
+std::array<cl_mem, 2> setupNebulas(
+  const cl_context &context,
+  const cl_command_queue &queue,
+  const cl_kernel &kernel,
+  const std::vector<Feature> &features,
+  const long realX,
+  const long realY
+) {
   cl_int ret{CL_SUCCESS};
 
   // Filter out nebulae
   std::vector<Feature> nebulae;
   for (auto &feature : features) {
     if (feature.kind == Nebula) {
+      if (sqr(feature.x - realX) + sqr(feature.y - realY) > 40.0f * sqr(feature.radius)) {
+        continue;
+      }
       nebulae.push_back(feature);
     }
   }
@@ -756,8 +768,6 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  auto nebulaBuf = setupNebulas(context, commandQueue, stargenKernel, features);
-
   Image airyDisk = imageFromGimpExport(airyKernel);
   airyDisk.premultiplyAlpha();
 
@@ -852,15 +862,29 @@ int main(int argc, char const *argv[]) {
         commandQueue,
         stargenKernel,
         features,
-        static_cast<long>(x * chunkDimension) - offsetX,
-        static_cast<long>(y * chunkDimension) - offsetY,
+        static_cast<long>(x * chunkDimension),
+        static_cast<long>(y * chunkDimension),
         chunkDimension
+      );
+      auto nebulaBuf = setupNebulas(
+        context,
+        commandQueue,
+        stargenKernel,
+        features,
+        static_cast<long>(x * chunkDimension) + static_cast<long>(chunkDimension) / 2,
+        static_cast<long>(y * chunkDimension) + static_cast<long>(chunkDimension) / 2
       );
       auto chunk = std::make_shared<Chunk>(chunkDimension, std::array<size_t, 2>({x * chunkDimension, y * chunkDimension}), offsetX, offsetY);
       chunk->generate(context, commandQueue, stargenKernel, finalizeKernel, outBuffer, maxKernelOffset);
       pngThreads.push_back(chunk->dumpPNG(outDir));
       if (starBuf != nullptr) {
         clReleaseMemObject(starBuf);
+      }
+      if (nebulaBuf[0] != nullptr) {
+        clReleaseMemObject(nebulaBuf[0]);
+      }
+      if (nebulaBuf[1] != nullptr) {
+        clReleaseMemObject(nebulaBuf[1]);
       }
     }
   }
@@ -869,12 +893,6 @@ int main(int argc, char const *argv[]) {
   clReleaseMemObject(foregroundBuf);
   clReleaseMemObject(nebulaConBuf);
 
-  if (nebulaBuf[0] != nullptr) {
-    clReleaseMemObject(nebulaBuf[0]);
-  }
-  if (nebulaBuf[1] != nullptr) {
-    clReleaseMemObject(nebulaBuf[1]);
-  }
 
   clReleaseMemObject(scratchBuffer);
   clReleaseMemObject(scratchBuffer2);
