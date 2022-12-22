@@ -682,7 +682,7 @@ int main(int argc, char const *argv[]) {
   const int offsetX = vm["offsetX"].as<int>();
   const int offsetY = vm["offsetY"].as<int>();
 
-  if (offsetX % chunkCount != 0 || offsetY % chunkCount != 0) {
+  if (offsetX % chunkDimension != 0 || offsetY % chunkDimension != 0) {
     std::cout << "Offset must be a multiple of chunkCount" << std::endl;
     return 1;
   }
