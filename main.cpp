@@ -488,6 +488,28 @@ std::array<cl_mem, 2> setupNebulas(const cl_context &context, const cl_command_q
     }
   }
 
+  if (nebulae.size() == 0) {
+    ret = clSetKernelArg(kernel, 2, sizeof(cl_mem), NULL);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error setting nebula buffer as kernel argument: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error setting nebula buffer as kernel argument");
+    }
+
+    ret = clSetKernelArg(kernel, 3, sizeof(cl_mem), NULL);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error setting nebula count as kernel argument: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error setting nebula count as kernel argument");
+    }
+
+    int zero = 0;
+    ret = clSetKernelArg(kernel, 4, sizeof(int), &zero);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error setting nebula count as kernel argument: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error setting nebula count as kernel argument");
+    }
+    return {nullptr, nullptr};
+  }
+
   // Create a buffer for the nebulae
   cl_mem nebulaBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, nebulae.size() * sizeof(Feature), NULL, &ret);
   if (ret != CL_SUCCESS) {
@@ -847,8 +869,12 @@ int main(int argc, char const *argv[]) {
   clReleaseMemObject(foregroundBuf);
   clReleaseMemObject(nebulaConBuf);
 
-  clReleaseMemObject(nebulaBuf[0]);
-  clReleaseMemObject(nebulaBuf[1]);
+  if (nebulaBuf[0] != nullptr) {
+    clReleaseMemObject(nebulaBuf[0]);
+  }
+  if (nebulaBuf[1] != nullptr) {
+    clReleaseMemObject(nebulaBuf[1]);
+  }
 
   clReleaseMemObject(scratchBuffer);
   clReleaseMemObject(scratchBuffer2);
