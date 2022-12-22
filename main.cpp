@@ -236,13 +236,15 @@ class Chunk : public std::enable_shared_from_this<Chunk> {
   size_t offset[2];
   std::string chunkName;
 public:
-  Chunk(size_t dimension, std::array<size_t, 2> offset) {
+  Chunk(size_t dimension, std::array<size_t, 2> offset, const int offsetX, const int offsetY) {
     assert(offset[0] % dimension == 0);
     assert(offset[1] % dimension == 0);
     this->dimension = dimension;
     this->offset[0] = offset[0];
     this->offset[1] = offset[1];
-    chunkName = std::to_string(offset[0] / dimension) + "_" + std::to_string(offset[1] / dimension);
+    chunkName =
+      std::to_string((offsetX + static_cast<long>(offset[0])) / static_cast<long>(dimension)) + "_" +
+      std::to_string((offsetY + static_cast<long>(offset[1])) / static_cast<long>(dimension));
     data = new float[dimension * dimension * 4];
   }
   ~Chunk() {
@@ -353,7 +355,7 @@ ostream &operator<<(ostream &os, const Feature &f) {
 }
 
 // read in the features from the json feature file
-std::vector<Feature> readFeatures(const std::string &fileName) {
+std::vector<Feature> readFeatures(const std::string &fileName, const int offsetX, const int offsetY) {
   pt::ptree tree;
   pt::read_json(fileName, tree);
   // root of the json file is an array of features
@@ -361,8 +363,8 @@ std::vector<Feature> readFeatures(const std::string &fileName) {
 
   for (auto &feature : tree) {
     Feature f;
-    f.x = feature.second.get<float>("x");
-    f.y = feature.second.get<float>("y");
+    f.x = feature.second.get<float>("x") - offsetX;
+    f.y = feature.second.get<float>("y") - offsetY;
     f.radius = feature.second.get<float>("radius");
     f.strength = feature.second.get<float>("strength");
     f.kind = getFeatureKind(feature.second.get<std::string>("kind"));
@@ -393,15 +395,44 @@ void ensureDirectoryExists(const std::string &dirName) {
   }
 }
 
-cl_mem setupGlobularClusters(const cl_context &context, const cl_command_queue &queue, const cl_kernel &kernel, const std::vector<Feature> &features) {
+cl_mem setupGlobularClusters(
+  const cl_context &context,
+  const cl_command_queue &queue,
+  const cl_kernel &kernel,
+  const std::vector<Feature> &features,
+  const int realX,
+  const int realY,
+  const int dimension
+) {
   cl_int ret{CL_SUCCESS};
 
   // Filter out globular clusters
   std::vector<Feature> globularClusters;
   for (auto &feature : features) {
     if (feature.kind == GlobularCluster) {
+      if (feature.x + feature.radius < realX || feature.x - feature.radius > realX + dimension ||
+          feature.y + feature.radius < realY || feature.y - feature.radius > realY + dimension
+      ) {
+        continue;
+      }
       globularClusters.push_back(feature);
     }
+  }
+
+  if (globularClusters.size() == 0) {
+    ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), NULL);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error setting globular cluster buffer as kernel argument: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error setting globular cluster buffer as kernel argument");
+    }
+
+    int zero = 0;
+    ret = clSetKernelArg(kernel, 1, sizeof(int), &zero);
+    if (ret != CL_SUCCESS) {
+      std::cout << "Error setting globular cluster count as kernel argument: " << getErrorString(ret) << std::endl;
+      throw std::runtime_error("Error setting globular cluster count as kernel argument");
+    }
+    return nullptr;
   }
 
   // Create a buffer for the globular clusters
@@ -595,6 +626,8 @@ int main(int argc, char const *argv[]) {
     ("outputDirectory", po::value<std::string>()->default_value("output"), "Directory to output the pngs")
     ("featureFile", po::value<std::string>()->default_value("features.json"), "File containing the features to generate")
     ("seed", po::value<int>()->default_value(5782), "Seed for the random number generator")
+    ("offsetX", po::value<int>()->default_value(0), "Offset in the x direction")
+    ("offsetY", po::value<int>()->default_value(0), "Offset in the y direction")
   ;
 
   po::variables_map vm;
@@ -608,13 +641,21 @@ int main(int argc, char const *argv[]) {
 
   const auto outDir = vm["outputDirectory"].as<std::string>();
 
-  ensureDirectoryExists(outDir);
-
   unsigned chunkCount = vm["chunkCount"].as<unsigned>();
   unsigned chunkDimension = vm["chunkDimension"].as<unsigned>();
   const int seed = vm["seed"].as<int>();
 
-  auto features = readFeatures(vm["featureFile"].as<std::string>());
+  const int offsetX = vm["offsetX"].as<int>();
+  const int offsetY = vm["offsetY"].as<int>();
+
+  if (offsetX % chunkCount != 0 || offsetY % chunkCount != 0) {
+    std::cout << "Offset must be a multiple of chunkCount" << std::endl;
+    return 1;
+  }
+
+  ensureDirectoryExists(outDir);
+
+  auto features = readFeatures(vm["featureFile"].as<std::string>(), offsetX, offsetY);
 
   // Print the features
   std::cout << "Using the following features:" << std::endl;
@@ -693,7 +734,6 @@ int main(int argc, char const *argv[]) {
     throw std::runtime_error("Error setting kernel arg");
   }
 
-  auto starBuf = setupGlobularClusters(context, commandQueue, stargenKernel, features);
   auto nebulaBuf = setupNebulas(context, commandQueue, stargenKernel, features);
 
   Image airyDisk = imageFromGimpExport(airyKernel);
@@ -785,9 +825,21 @@ int main(int argc, char const *argv[]) {
 
   for (size_t x = 0; x < chunkCount; x++) {
     for (size_t y = 0; y < chunkCount; y++) {
-      auto chunk = std::make_shared<Chunk>(chunkDimension, std::array<size_t, 2>({x * chunkDimension, y * chunkDimension}));
+      auto starBuf = setupGlobularClusters(
+        context,
+        commandQueue,
+        stargenKernel,
+        features,
+        static_cast<long>(x * chunkDimension) - offsetX,
+        static_cast<long>(y * chunkDimension) - offsetY,
+        chunkDimension
+      );
+      auto chunk = std::make_shared<Chunk>(chunkDimension, std::array<size_t, 2>({x * chunkDimension, y * chunkDimension}), offsetX, offsetY);
       chunk->generate(context, commandQueue, stargenKernel, finalizeKernel, outBuffer, maxKernelOffset);
       pngThreads.push_back(chunk->dumpPNG(outDir));
+      if (starBuf != nullptr) {
+        clReleaseMemObject(starBuf);
+      }
     }
   }
 
@@ -795,7 +847,6 @@ int main(int argc, char const *argv[]) {
   clReleaseMemObject(foregroundBuf);
   clReleaseMemObject(nebulaConBuf);
 
-  clReleaseMemObject(starBuf);
   clReleaseMemObject(nebulaBuf[0]);
   clReleaseMemObject(nebulaBuf[1]);
 

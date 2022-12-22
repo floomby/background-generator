@@ -13,6 +13,8 @@ It uses opencl to generate large contiguous backgrounds of nebulas and stars and
 | --outputDirectory arg (=output) | Directory to output the pngs |
 | --featureFile arg (=features.json) | File containing the features to generate |
 | --seed arg (=5782) | Seed for the random number generator |
+| --offsetX arg (=0) | Offset the generated chunks by this amount on the x axis |
+| --offsetY arg (=0) | Offset the generated chunks by this amount on the y axis |
 
 See the include example `features.json` file to understand feature definition.
 
