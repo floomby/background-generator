@@ -2,7 +2,7 @@ CL_LIB := -L "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.0/lib/x64"
 CL_INC := -I "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.0/include"
 
 CPP_FLAGS := -Wall -pedantic -std=gnu++23 -ggdb -fdiagnostics-color $(CL_INC)
-LD_FLAGS := -lOpenCL $(CL_LIB) -lboost_program_options-mt $(BOOST_LIB)
+LD_FLAGS := -lOpenCL $(CL_LIB) -lboost_program_options-mt $(BOOST_LIB) -lboost_filesystem-mt
 
 target: main.o spng.dll
 	g++ $(CPP_FLAGS) -o target main.o $(LD_FLAGS) spng.dll

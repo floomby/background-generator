@@ -25,6 +25,7 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/program_options.hpp>
+#include <boost/dll.hpp>
 
 namespace po = boost::program_options;
 namespace pt = boost::property_tree;
@@ -662,6 +663,7 @@ int main(int argc, char const *argv[]) {
     ("seed", po::value<int>()->default_value(5782), "Seed for the random number generator")
     ("offsetX", po::value<int>()->default_value(0), "Offset in the x direction")
     ("offsetY", po::value<int>()->default_value(0), "Offset in the y direction")
+    ("muteFeatures", "Do not print the features to the console")
   ;
 
   po::variables_map vm;
@@ -691,13 +693,15 @@ int main(int argc, char const *argv[]) {
 
   auto features = readFeatures(vm["featureFile"].as<std::string>(), offsetX, offsetY);
 
-  // Print the features
-  std::cout << "Using the following features:" << std::endl;
-  for (auto &feature : features) {
-    std::cout << feature << std::endl;
+  if (!vm.count("muteFeatures")) {
+    // Print the features
+    std::cout << "Using the following features:" << std::endl;
+    for (auto &feature : features) {
+      std::cout << feature << std::endl;
+    }
   }
 
-  std::ifstream t("gen.ocl");
+  std::ifstream t(boost::dll::program_location().parent_path().append("/gen.ocl"));
   std::string source_str((std::istreambuf_iterator<char>(t)), std::istreambuf_iterator<char>());
 
   const char *source = source_str.c_str();
@@ -746,13 +750,13 @@ int main(int argc, char const *argv[]) {
 
   cl_kernel finalizeKernel = clCreateKernel(program, "finalize", &ret);
   if (ret != CL_SUCCESS) {
-    std::cout << "Error creating kernel" << std::endl;
+    std::cout << "Error creating kernel: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error creating kernel");
   }
 
   cl_kernel stargenKernel = clCreateKernel(program, "stargen", &ret);
   if (ret != CL_SUCCESS) {
-    std::cout << "Error creating kernel" << std::endl;
+    std::cout << "Error creating kernel: " << getErrorString(ret) << std::endl;
     throw std::runtime_error("Error creating kernel");
   }
 
